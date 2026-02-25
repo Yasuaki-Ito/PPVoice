@@ -52,10 +52,12 @@ class App(ctk.CTk):
         self.geometry("700x820")
         self.minsize(600, 700)
 
-        # アイコン設定
-        ico_path = os.path.join(os.path.dirname(__file__), "app.ico")
-        if os.path.exists(ico_path):
-            self.iconbitmap(ico_path)
+        # アイコン設定 (src/ 内 → ルート の順で探す)
+        for _d in [os.path.dirname(__file__), os.path.join(os.path.dirname(__file__), "..")]:
+            ico_path = os.path.join(_d, "app.ico")
+            if os.path.exists(ico_path):
+                self.iconbitmap(ico_path)
+                break
 
         self._speakers_cache: list[dict] = []
         self._speaker_map: dict[str, int] = {}

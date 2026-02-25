@@ -11,6 +11,17 @@ PowerPointのノート欄から音声を自動合成し、**音声付きPPTX**�
 - **読み指定** — `{漢字|よみがな}` の記法でTTSに渡す読みと表示テキストを分離
 - **GUI / CLI** — GUIと、コマンドラインの両方から利用可能
 
+## デモ
+
+PPVoice で生成した音声付きスライドの紹介動画です（クリックで再生）。この動画自体も PPVoice で作成されています。
+
+[![紹介動画](https://img.youtube.com/vi/coYA10Yf1rw/maxresdefault.jpg)](https://youtu.be/coYA10Yf1rw)
+
+入力ファイルの選択、話者・字幕の設定をGUI上で行えます。
+
+![スクリーンショット](docs/screenshot.png)
+
+
 ## 必要なもの
 
 - [VOICEVOX Engine](https://voicevox.hiroshiba.jp/) (ローカルで起動しておく)

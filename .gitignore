@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.pyc
+
+# Build / Installer
+build/
+dist/
+installer_output/
+*.spec
+*.iss
+build.bat
+
+# Claude Code
+.claude/
+CLAUDE.md
+
+# Generated files
+app.ico
+app_preview.png
+make_icon.py
+make_guide.py
+
+# Test / sample data
+test/
+*.pptx
+guide*.pptx
+output.pptx
+
+# Theme (bundled in exe, not needed for pip usage)
+# theme_modern.json is needed for running from source

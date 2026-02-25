@@ -9,7 +9,7 @@ PowerPointのノート欄から音声を自動合成し、**音声付きPPTX**�
 - **音声付きPPTX生成** — スライドごとにノートを読み上げる音声を埋め込み、自動再生を設定
 - **字幕** — 読み上げテキストをスライド上に字幕として表示（タイミング同期）。字幕スタイルは縁取り（輪郭・ぼかし）・半透明背景から選択可能
 - **読み指定** — `{漢字|よみがな}` の記法でTTSに渡す読みと表示テキストを分離
-- **GUI / CLI** — GUIと、コマンドラインの両方から利用可能
+- **GUI** — 入力ファイルの選択、話者・字幕の設定をGUI上で操作
 
 ## デモ
 
@@ -93,44 +93,6 @@ PPVoice で生成した音声付きPPTXは、PowerPoint の標準機能で動画
 ```
 
 タグは読み上げには影響しません（TTSにはタグを除いたテキストが渡されます）。`{<b>}` のように `{...}` で囲むとタグがエスケープされ、そのまま表示されます。
-
-## CLI
-
-インストール時に「PPVoice-CLI を PATH に追加」を選択すると、コマンドラインからも利用できます。
-
-```bash
-# 音声付きPPTX生成
-PPVoice-CLI input.pptx -o output.pptx
-
-# 字幕付き
-PPVoice-CLI input.pptx -o output.pptx --subtitle
-
-# 話者を指定 (VOICEVOX話者ID)
-PPVoice-CLI input.pptx -o output.pptx --speaker 3
-
-# 話者一覧を表示
-PPVoice-CLI --list-speakers
-```
-
-### CLIオプション
-
-| オプション | 説明 | デフォルト |
-|---|---|---|
-| `--speaker ID` | VOICEVOX話者ID | `1` |
-| `--voicevox-url URL` | VOICEVOX APIのURL | `http://localhost:50021` |
-| `--pause SEC` | 文間の無音秒数 | `0.5` |
-| `--end-pause SEC` | スライド音声終了後の待機秒数 | `2.0` |
-| `--subtitle` | 字幕を表示する | off |
-| `--subtitle-style {box,outline}` | 字幕スタイル (半透明背景 / 縁取り) | `box` |
-| `--subtitle-outline` / `--no-subtitle-outline` | 縁取り時に輪郭を付ける | on |
-| `--subtitle-outline-color HEX` | 輪郭の色 | `000000` |
-| `--subtitle-outline-width PT` | 輪郭の太さ | `0.75` |
-| `--subtitle-glow` / `--no-subtitle-glow` | 縁取り時にぼかしを付ける | off |
-| `--subtitle-glow-color HEX` | ぼかしの色 | `000000` |
-| `--subtitle-glow-size PT` | ぼかしのサイズ | `11.0` |
-| `--subtitle-size PT` | 字幕フォントサイズ | `18` |
-| `--subtitle-font NAME` | 字幕のデフォルトフォント | テーマ依存 |
-| `--subtitle-bottom PCT` | 字幕の下マージン (0.0〜1.0) | `0.05` |
 
 ## ライセンス
 

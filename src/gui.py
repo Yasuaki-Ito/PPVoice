@@ -6,6 +6,8 @@ import threading
 import tkinter as tk
 from tkinter import colorchooser, filedialog, messagebox
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
 import customtkinter as ctk
 
 from pptx_reader import read_slides

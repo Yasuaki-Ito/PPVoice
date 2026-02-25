@@ -9,57 +9,46 @@ PowerPointのノート欄から音声を自動合成し、**音声付きPPTX**�
 - **音声付きPPTX生成** — スライドごとにノートを読み上げる音声を埋め込み、自動再生を設定
 - **字幕** — 読み上げテキストをスライド上に字幕として表示（タイミング同期）
 - **読み指定** — `{漢字|よみがな}` の記法でTTSに渡す読みと表示テキストを分離
-- **GUI / CLI** — customtkinter製のGUIと、コマンドラインの両方から利用可能
+- **GUI / CLI** — GUIと、コマンドラインの両方から利用可能
 
 ## 必要なもの
 
-- Python 3.10+
 - [VOICEVOX Engine](https://voicevox.hiroshiba.jp/) (ローカルで起動しておく)
 
 > **注意**: VOICEVOXのキャラクターにはそれぞれ利用規約があります。使用前に [VOICEVOX公式サイト](https://voicevox.hiroshiba.jp/) で確認してください。
 
 ## インストール
 
-```bash
-pip install -r requirements.txt
-```
+[Releases](../../releases) ページから最新の `PPVoice-x.x.x-setup.exe` をダウンロードして実行してください。
 
 ## 使い方
 
-### GUI
+### 1. PowerPoint のノート欄にテキストを書く
 
-```bash
-python gui.py
-```
+PPVoice はスライドの **ノート欄** に書かれたテキストを読み上げます。PowerPoint でスライド下部の「ノートを入力」欄に、読み上げたい内容を記入してください。
 
-### CLI
+- ノートが空のスライドは音声なし（スキップ）になります
+- テキストは句読点やピリオドの位置で自動的に文に分割されて合成されます
+- 長い文は読点やカンマの位置でさらに分割されます
 
-```bash
-# 音声付きPPTX生成
-python main.py input.pptx -o output.pptx
+### 2. VOICEVOX Engine を起動する
 
-# 字幕付き
-python main.py input.pptx -o output.pptx --subtitle
+PPVoice を使う前に、[VOICEVOX](https://voicevox.hiroshiba.jp/) を起動しておいてください。デフォルトで `http://localhost:50021` に接続します。
 
-# 話者を指定 (VOICEVOX話者ID)
-python main.py input.pptx -o output.pptx --speaker 3
+### 3. PPVoice で音声を生成する
 
-# 話者一覧を表示
-python main.py --list-speakers
-```
+インストール後、スタートメニューまたはデスクトップの **PPVoice** から起動できます。入力ファイルの選択、話者・字幕の設定をGUI上で行えます。
 
-### CLIオプション
+### 4. (オプション) 動画に変換する
 
-| オプション | 説明 | デフォルト |
-|---|---|---|
-| `--speaker ID` | VOICEVOX話者ID | `1` |
-| `--voicevox-url URL` | VOICEVOX APIのURL | `http://localhost:50021` |
-| `--pause SEC` | 文間の無音秒数 | `0.5` |
-| `--end-pause SEC` | スライド音声終了後の待機秒数 | `2.0` |
-| `--subtitle` | 字幕を表示する | off |
-| `--subtitle-style {box,outline}` | 字幕スタイル (半透明背景 / 縁取り) | `box` |
-| `--subtitle-size PT` | 字幕フォントサイズ | `18` |
-| `--subtitle-bottom PCT` | 字幕の下マージン (0.0〜1.0) | `0.05` |
+PPVoice で生成した音声付きPPTXは、PowerPoint の標準機能で動画に変換できます。
+
+1. 生成されたPPTXファイルを PowerPoint で開く
+2. **ファイル → エクスポート → ビデオの作成** を選択
+3. 「記録されたタイミングとナレーションを使用する」を選択
+4. **ビデオの作成** をクリック
+
+音声とスライド切り替えのタイミングが保持されたMP4が生成されます。
 
 ## 読み指定の記法
 
@@ -79,6 +68,37 @@ python main.py --list-speakers
 ```
 
 `{` や `}` 単体は `{...|...}` のパターンに該当しない限りそのまま表示されるため、エスケープは不要です。
+
+## CLI
+
+インストール時に「PPVoice-CLI を PATH に追加」を選択すると、コマンドラインからも利用できます。
+
+```bash
+# 音声付きPPTX生成
+PPVoice-CLI input.pptx -o output.pptx
+
+# 字幕付き
+PPVoice-CLI input.pptx -o output.pptx --subtitle
+
+# 話者を指定 (VOICEVOX話者ID)
+PPVoice-CLI input.pptx -o output.pptx --speaker 3
+
+# 話者一覧を表示
+PPVoice-CLI --list-speakers
+```
+
+### CLIオプション
+
+| オプション | 説明 | デフォルト |
+|---|---|---|
+| `--speaker ID` | VOICEVOX話者ID | `1` |
+| `--voicevox-url URL` | VOICEVOX APIのURL | `http://localhost:50021` |
+| `--pause SEC` | 文間の無音秒数 | `0.5` |
+| `--end-pause SEC` | スライド音声終了後の待機秒数 | `2.0` |
+| `--subtitle` | 字幕を表示する | off |
+| `--subtitle-style {box,outline}` | 字幕スタイル (半透明背景 / 縁取り) | `box` |
+| `--subtitle-size PT` | 字幕フォントサイズ | `18` |
+| `--subtitle-bottom PCT` | 字幕の下マージン (0.0〜1.0) | `0.05` |
 
 ## ライセンス
 

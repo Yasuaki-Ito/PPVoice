@@ -20,6 +20,9 @@ import argparse
 import os
 import sys
 
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+from version import __version__
 from pptx_reader import read_slides
 from pptx_writer import embed_audio
 from tts.voicevox import VoicevoxEngine
@@ -78,6 +81,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="PowerPointノートから自動スピーチを生成",
     )
+    parser.add_argument("--version", action="version", version=f"PPVoice {__version__}")
     parser.add_argument("input", nargs="?", help="入力PPTXファイル")
     parser.add_argument("-o", "--output", help="出力ファイルパス")
     parser.add_argument("--speaker", type=int, default=1, help="VOICEVOX話者ID (default: 1)")

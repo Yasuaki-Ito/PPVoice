@@ -10,16 +10,6 @@ import requests
 
 from .base import TTSEngine
 
-# 文の区切りパターン（優先度順）
-_SPLIT_SENTENCE = re.compile(r"(?<=[。．.！!？?\n])")  # 句点・改行
-_SPLIT_CLAUSE = re.compile(r"(?<=[、，,;；])")           # 読点・カンマ
-
-_MAX_CHUNK_LEN = 50  # これを超えたら読点等でさらに分割
-
-# 行頭禁則文字（これらで始まるチャンクは前に結合する）
-_KINSOKU = set("。．.！!？?、，,;；）)」』】〉》〕｝}ー〜…‥・")
-
-
 # 読み指定パターン: {表示テキスト|読み}
 _READING_PATTERN = re.compile(r"\{([^|}]+)\|([^}]+)\}")
 # 保護パターン: {テキスト} (|なし) — 文分割を抑制
@@ -39,10 +29,13 @@ _GT = "\x03"
 def _to_display(text: str) -> str:
     """{表示|読み} → 表示, {テキスト} → テキスト に変換 (字幕用)。
 
+    <br> は改行文字に変換する。
     {テキスト} 内の <> はプレースホルダに変換し、
     書式タグとして解釈されないようにする。
     """
     text = _READING_PATTERN.sub(r"\1", text)
+    # <br> → 改行
+    text = _SPLIT_BR.sub("\n", text)
     # {テキスト} 内の <> をエスケープしてから展開
     def _escape_brace(m):
         return m.group(1).replace("<", _LT).replace(">", _GT)
@@ -59,48 +52,11 @@ def _to_reading(text: str) -> str:
     return _FORMAT_TAG.sub("", text)
 
 
-def _split_long(text: str, max_len: int = _MAX_CHUNK_LEN) -> list[str]:
-    """長いテキストを読点やスペースで再分割する。"""
-    if len(text) <= max_len:
-        return [text]
-
-    # 読点で分割
-    parts = _SPLIT_CLAUSE.split(text)
-    parts = [p.strip() for p in parts if p.strip()]
-    if len(parts) > 1:
-        # 分割後もまだ長いものは固定長で切る
-        result = []
-        for p in parts:
-            if len(p) <= max_len:
-                result.append(p)
-            else:
-                for i in range(0, len(p), max_len):
-                    chunk = p[i:i + max_len].strip()
-                    if chunk:
-                        result.append(chunk)
-        return result
-
-    # 読点がなければ固定長で切る
-    return [text[i:i + max_len].strip() for i in range(0, len(text), max_len) if text[i:i + max_len].strip()]
-
-
-def _apply_kinsoku(chunks: list[str]) -> list[str]:
-    """禁則処理: 行頭禁則文字で始まるチャンクを前のチャンクに結合する。"""
-    if not chunks:
-        return chunks
-    result = [chunks[0]]
-    for chunk in chunks[1:]:
-        if chunk and chunk[0] in _KINSOKU and result:
-            result[-1] += chunk
-        else:
-            result.append(chunk)
-    return result
-
-
 def _split_sentences(text: str) -> list[str]:
-    """テキストを文単位で分割する。長い文はさらに細分化する。
+    """テキストを改行でのみ分割する。
 
-    {...} ブロック内の句読点で分割しないよう保護する。
+    <br> は分割せず保持する（字幕でテキストボックス内改行になる）。
+    {...} ブロック内の改行で分割しないよう保護する。
     """
     # {...|...} と {...} をプレースホルダに置換して分割から保護
     placeholders: list[str] = []
@@ -112,18 +68,12 @@ def _split_sentences(text: str) -> list[str]:
     protected = _READING_PATTERN.sub(_protect, text)
     protected = _BRACE_PATTERN.sub(_protect, protected)
 
-    # <br> で強制分割してから、各パートを句点で分割
-    br_parts = _SPLIT_BR.split(protected)
-    parts = []
-    for bp in br_parts:
-        parts.extend(_SPLIT_SENTENCE.split(bp))
+    # 改行のみで分割 (<br> は分割しない)
     result = []
-    for p in parts:
-        p = p.strip()
-        if not p:
-            continue
-        result.extend(_split_long(p))
-    result = _apply_kinsoku(result)
+    for line in protected.split("\n"):
+        line = line.strip()
+        if line:
+            result.append(line)
 
     # プレースホルダを復元
     def _restore(s):

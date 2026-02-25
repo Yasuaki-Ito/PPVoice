@@ -87,35 +87,6 @@ def _make_audio_pic_xml(shape_id: int, audio_rId: str, media_rId: str) -> etree.
 # 字幕テキストボックス
 # ---------------------------------------------------------------------------
 
-def _estimate_chars_per_line(slide_w: int, font_size: int) -> int:
-    """スライド幅とフォントサイズからテキストボックス1行に収まる文字数を推定する。"""
-    box_w_pt = (slide_w * 0.85) / 12700  # EMU → pt
-    # 日本語は全角で約font_size幅、マージン分を引く
-    return max(10, int((box_w_pt - 20) / font_size))
-
-
-def _split_subtitle_timings(
-    timings: list[tuple[str, int, int]],
-    max_chars: int,
-) -> list[tuple[str, int, int]]:
-    """1行に収まらない字幕文を分割し、タイミングを按分する。"""
-    result = []
-    for text, start_ms, dur_ms in timings:
-        vis_len = _visual_len(text)
-        if vis_len <= max_chars:
-            result.append((text, start_ms, dur_ms))
-            continue
-        # 表示文字数ベースで max_chars ごとに分割
-        lines = _split_formatted_text(text, max_chars)
-        # 文字数比でタイミングを按分
-        offset = start_ms
-        for line in lines:
-            line_vis = _visual_len(line)
-            line_dur = int(dur_ms * line_vis / vis_len) if vis_len > 0 else 0
-            result.append((line, offset, line_dur))
-            offset += line_dur
-    return result
-
 
 def _apply_text_glow(run_element, glow_color: str = "000000", radius_emu: int = 139700, alpha_val: int = 70000):
     """テキストのランプロパティに光彩(Glow)エフェクトを追加する。
@@ -188,41 +159,6 @@ class _TextSegment:
     color: str | None = None  # hex RGB (e.g. "FF0000") or None
     font: str | None = None   # フォント名 or None (デフォルト)
 
-
-def _visual_len(text: str) -> int:
-    """タグとプレースホルダを除いた表示上の文字数を返す。"""
-    stripped = _FORMAT_TAG.sub("", text)
-    # プレースホルダは表示上1文字ずつ
-    return len(stripped)
-
-
-def _split_formatted_text(text: str, max_chars: int) -> list[str]:
-    """書式タグ付きテキストを表示文字数ベースで分割する。
-
-    タグの途中で切れないようにし、分割後もタグ構造を維持する。
-    """
-    lines = []
-    current_line = ""
-    vis_count = 0
-    i = 0
-    while i < len(text):
-        # タグの開始チェック
-        m = _FORMAT_TAG.match(text, i)
-        if m:
-            current_line += m.group(0)
-            i = m.end()
-            continue
-        # 通常文字
-        current_line += text[i]
-        vis_count += 1
-        i += 1
-        if vis_count >= max_chars and i < len(text):
-            lines.append(current_line)
-            current_line = ""
-            vis_count = 0
-    if current_line:
-        lines.append(current_line)
-    return lines
 
 
 def _parse_formatted_text(text: str) -> list[_TextSegment]:
@@ -298,8 +234,6 @@ def _add_subtitle_shapes(
 ) -> tuple[list[int], list[tuple[str, int, int]]]:
     """字幕用テキストボックスをスライドに追加する。
 
-    長い文は1行に収まるよう分割される。
-
     Args:
         style: "box" (半透明背景) または "outline" (縁取り)
         font_color: 字幕テキストの色 (デフォルト: 白)
@@ -322,29 +256,12 @@ def _add_subtitle_shapes(
     slide_w = prs.slide_width
     slide_h = prs.slide_height
     box_w = int(slide_w * 0.85)
-    # 1行分の高さ (上下パディング含む)
-    line_h = int(Pt(font_size).emu * 2.2)
     box_left = int((slide_w - box_w) / 2)
-    box_top = int(slide_h * (1 - bottom_margin_pct)) - line_h
 
-    # 長い文を1行に収まるよう分割
-    max_chars = _estimate_chars_per_line(slide_w, font_size)
-    split_timings = _split_subtitle_timings(timings, max_chars)
-
-    shape_ids = []
-    for text, _, _ in split_timings:
-        txBox = slide.shapes.add_textbox(box_left, box_top, box_w, line_h)
-        tf = txBox.text_frame
-        tf.word_wrap = False
-        tf.auto_size = None
-        body_pr = tf._txBody.find(_qn("a:bodyPr"))
-        if body_pr is not None:
-            body_pr.set("anchor", "ctr")
-        p = tf.paragraphs[0]
+    def _fill_paragraph(p, line_text):
+        """1つの段落に書式付きテキストを設定する。"""
         p.alignment = PP_ALIGN.CENTER
-
-        # 書式タグを解析して複数ランに分割
-        segments = _parse_formatted_text(text)
+        segments = _parse_formatted_text(line_text)
         for seg in segments:
             run = p.add_run()
             run.text = seg.text
@@ -354,7 +271,6 @@ def _add_subtitle_shapes(
                 if seg.color else font_color
             )
             run.font.bold = True
-            # フォント: インラインタグ優先、なければデフォルト
             effective_font = seg.font or font_name
             if effective_font:
                 run.font.name = effective_font
@@ -362,7 +278,6 @@ def _add_subtitle_shapes(
                 run.font.italic = True
             if seg.underline:
                 run.font.underline = True
-
             if style == "outline":
                 if use_outline:
                     _apply_text_outline(run._r, outline_color=outline_color_hex,
@@ -370,6 +285,26 @@ def _add_subtitle_shapes(
                 if use_glow:
                     _apply_text_glow(run._r, glow_color=glow_color_hex,
                                      radius_emu=int(Pt(glow_radius_pt).emu))
+
+    shape_ids = []
+    for text, _, _ in timings:
+        lines = text.split("\n")
+        num_lines = len(lines)
+        box_h = int(Pt(font_size).emu * 2.2 * num_lines)
+        box_top_adj = int(slide_h * (1 - bottom_margin_pct)) - box_h
+
+        txBox = slide.shapes.add_textbox(box_left, box_top_adj, box_w, box_h)
+        tf = txBox.text_frame
+        tf.word_wrap = True
+        tf.auto_size = None
+        body_pr = tf._txBody.find(_qn("a:bodyPr"))
+        if body_pr is not None:
+            body_pr.set("anchor", "ctr")
+
+        # 1行目は既存の段落を使用、2行目以降は add_paragraph()
+        _fill_paragraph(tf.paragraphs[0], lines[0])
+        for line in lines[1:]:
+            _fill_paragraph(tf.add_paragraph(), line)
 
         if style == "outline":
             txBox.fill.background()
@@ -388,7 +323,7 @@ def _add_subtitle_shapes(
 
         shape_ids.append(txBox.shape_id)
 
-    return shape_ids, split_timings
+    return shape_ids, timings
 
 
 # ---------------------------------------------------------------------------

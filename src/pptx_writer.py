@@ -2,8 +2,10 @@
 
 import io
 import os
+import re
 import subprocess
 import wave
+from dataclasses import dataclass, field
 from datetime import datetime
 
 from lxml import etree
@@ -99,18 +101,17 @@ def _split_subtitle_timings(
     """1行に収まらない字幕文を分割し、タイミングを按分する。"""
     result = []
     for text, start_ms, dur_ms in timings:
-        if len(text) <= max_chars:
+        vis_len = _visual_len(text)
+        if vis_len <= max_chars:
             result.append((text, start_ms, dur_ms))
             continue
-        # max_chars ごとに分割
-        lines = []
-        for i in range(0, len(text), max_chars):
-            lines.append(text[i:i + max_chars])
+        # 表示文字数ベースで max_chars ごとに分割
+        lines = _split_formatted_text(text, max_chars)
         # 文字数比でタイミングを按分
-        total_chars = len(text)
         offset = start_ms
         for line in lines:
-            line_dur = int(dur_ms * len(line) / total_chars)
+            line_vis = _visual_len(line)
+            line_dur = int(dur_ms * line_vis / vis_len) if vis_len > 0 else 0
             result.append((line, offset, line_dur))
             offset += line_dur
     return result
@@ -120,7 +121,7 @@ def _apply_text_glow(run_element, glow_color: str = "000000", radius_emu: int = 
     """テキストのランプロパティに光彩(Glow)エフェクトを追加する。
 
     PowerPoint の「文字の効果」→「光彩」に相当。
-    白文字 + 黒光彩で縁取りを実現する。
+    白文字 + 黒光彩でぼかし縁取りを実現する。
 
     Args:
         glow_color: 光彩の色 (hex RGB)
@@ -140,15 +141,158 @@ def _apply_text_glow(run_element, glow_color: str = "000000", radius_emu: int = 
     alpha.set("val", str(alpha_val))
 
 
+def _apply_text_outline(run_element, outline_color: str = "000000", width_emu: int = 12700):
+    """テキストのランプロパティに輪郭(Outline)を追加する。
+
+    PowerPoint の「文字の輪郭」に相当。
+    <a:ln> でテキストのストロークを設定する。
+
+    Args:
+        outline_color: 輪郭の色 (hex RGB)
+        width_emu: 輪郭の幅 (EMU, デフォルト 12700 = 1pt)
+    """
+    rPr = run_element.find(_qn("a:rPr"))
+    if rPr is None:
+        return
+    # <a:ln> は <a:solidFill> の前に配置 (OOXML スキーマ順序)
+    ln = etree.Element(_qn("a:ln"))
+    ln.set("w", str(width_emu))
+    solid = etree.SubElement(ln, _qn("a:solidFill"))
+    srgb = etree.SubElement(solid, _qn("a:srgbClr"))
+    srgb.set("val", outline_color)
+    rPr.insert(0, ln)
+
+
+# ---------------------------------------------------------------------------
+# 書式タグ解析
+# ---------------------------------------------------------------------------
+
+# <b>, </b>, <i>, </i>, <u>, </u>, <color=#RRGGBB>, </color>,
+# <font=名前>, </font> (大文字小文字対応)
+_FORMAT_TAG = re.compile(
+    r"<(/?)(b|i|u|color|font)(?:=([^>]+))?>",
+    re.IGNORECASE,
+)
+# voicevox.py のプレースホルダと同じ値
+_LT = "\x02"
+_GT = "\x03"
+
+
+@dataclass
+class _TextSegment:
+    """書式付きテキストの1区間。"""
+    text: str
+    bold: bool = False
+    italic: bool = False
+    underline: bool = False
+    color: str | None = None  # hex RGB (e.g. "FF0000") or None
+    font: str | None = None   # フォント名 or None (デフォルト)
+
+
+def _visual_len(text: str) -> int:
+    """タグとプレースホルダを除いた表示上の文字数を返す。"""
+    stripped = _FORMAT_TAG.sub("", text)
+    # プレースホルダは表示上1文字ずつ
+    return len(stripped)
+
+
+def _split_formatted_text(text: str, max_chars: int) -> list[str]:
+    """書式タグ付きテキストを表示文字数ベースで分割する。
+
+    タグの途中で切れないようにし、分割後もタグ構造を維持する。
+    """
+    lines = []
+    current_line = ""
+    vis_count = 0
+    i = 0
+    while i < len(text):
+        # タグの開始チェック
+        m = _FORMAT_TAG.match(text, i)
+        if m:
+            current_line += m.group(0)
+            i = m.end()
+            continue
+        # 通常文字
+        current_line += text[i]
+        vis_count += 1
+        i += 1
+        if vis_count >= max_chars and i < len(text):
+            lines.append(current_line)
+            current_line = ""
+            vis_count = 0
+    if current_line:
+        lines.append(current_line)
+    return lines
+
+
+def _parse_formatted_text(text: str) -> list[_TextSegment]:
+    """書式タグ付きテキストを解析し、セグメントのリストを返す。
+
+    対応タグ: <b>, <i>, <u>, <color=#RRGGBB> (大文字小文字対応)
+    プレースホルダ (_LT, _GT) は元の <> に復元される。
+    """
+    segments: list[_TextSegment] = []
+    bold = False
+    italic = False
+    underline = False
+    color: str | None = None
+    font_name: str | None = None
+
+    last_end = 0
+    for m in _FORMAT_TAG.finditer(text):
+        # タグ前のテキストをセグメントに追加
+        if m.start() > last_end:
+            plain = text[last_end:m.start()].replace(_LT, "<").replace(_GT, ">")
+            if plain:
+                segments.append(_TextSegment(plain, bold, italic, underline, color, font_name))
+
+        closing = m.group(1) == "/"
+        tag_name = m.group(2).lower()
+        tag_value = m.group(3)  # e.g. "#FF0000" or "メイリオ"
+
+        if tag_name == "b":
+            bold = not closing
+        elif tag_name == "i":
+            italic = not closing
+        elif tag_name == "u":
+            underline = not closing
+        elif tag_name == "color":
+            color = tag_value[1:].upper() if tag_value and not closing else None
+        elif tag_name == "font":
+            font_name = tag_value if tag_value and not closing else None
+
+        last_end = m.end()
+
+    # 残りテキスト
+    if last_end < len(text):
+        remaining = text[last_end:].replace(_LT, "<").replace(_GT, ">")
+        if remaining:
+            segments.append(_TextSegment(remaining, bold, italic, underline, color, font_name))
+
+    # タグなしの場合はそのまま1セグメント
+    if not segments:
+        plain = text.replace(_LT, "<").replace(_GT, ">")
+        if plain:
+            segments.append(_TextSegment(plain))
+
+    return segments
+
+
 def _add_subtitle_shapes(
     slide,
     timings: list[tuple[str, int, int]],
     prs,
     font_size: int = 18,
+    font_name: str = "",
     bottom_margin_pct: float = 0.05,
     style: str = "box",
     font_color: RGBColor | None = None,
+    use_outline: bool = True,
+    outline_color_hex: str = "000000",
+    outline_width_pt: float = 0.75,
+    use_glow: bool = False,
     glow_color_hex: str = "000000",
+    glow_radius_pt: float = 11.0,
     bg_color: RGBColor | None = None,
     bg_alpha: int = 60000,
 ) -> tuple[list[int], list[tuple[str, int, int]]]:
@@ -159,7 +303,12 @@ def _add_subtitle_shapes(
     Args:
         style: "box" (半透明背景) または "outline" (縁取り)
         font_color: 字幕テキストの色 (デフォルト: 白)
-        glow_color_hex: 光彩の色 hex RGB (outline スタイル時, デフォルト: "000000")
+        use_outline: 輪郭を付ける (style="outline" 時, デフォルト: True)
+        outline_color_hex: 輪郭の色 hex RGB (デフォルト: "000000")
+        outline_width_pt: 輪郭の太さ pt (デフォルト: 0.75)
+        use_glow: ぼかしを付ける (style="outline" 時, デフォルト: False)
+        glow_color_hex: ぼかしの色 hex RGB (デフォルト: "000000")
+        glow_radius_pt: ぼかしのサイズ pt (デフォルト: 11.0)
         bg_color: 背景色 (box スタイル時, デフォルト: 黒)
         bg_alpha: 背景の不透明度 (1/1000%, デフォルト: 60000 = 60%)
 
@@ -193,17 +342,37 @@ def _add_subtitle_shapes(
             body_pr.set("anchor", "ctr")
         p = tf.paragraphs[0]
         p.alignment = PP_ALIGN.CENTER
-        # ランレベルでフォント設定 (p.font は defRPr に書くため rPr が作られない)
-        run = p.add_run()
-        run.text = text
-        run.font.size = Pt(font_size)
-        run.font.color.rgb = font_color
-        run.font.bold = True
+
+        # 書式タグを解析して複数ランに分割
+        segments = _parse_formatted_text(text)
+        for seg in segments:
+            run = p.add_run()
+            run.text = seg.text
+            run.font.size = Pt(font_size)
+            run.font.color.rgb = (
+                RGBColor(int(seg.color[0:2], 16), int(seg.color[2:4], 16), int(seg.color[4:6], 16))
+                if seg.color else font_color
+            )
+            run.font.bold = True
+            # フォント: インラインタグ優先、なければデフォルト
+            effective_font = seg.font or font_name
+            if effective_font:
+                run.font.name = effective_font
+            if seg.italic:
+                run.font.italic = True
+            if seg.underline:
+                run.font.underline = True
+
+            if style == "outline":
+                if use_outline:
+                    _apply_text_outline(run._r, outline_color=outline_color_hex,
+                                        width_emu=int(Pt(outline_width_pt).emu))
+                if use_glow:
+                    _apply_text_glow(run._r, glow_color=glow_color_hex,
+                                     radius_emu=int(Pt(glow_radius_pt).emu))
 
         if style == "outline":
-            # 縁取り: テキストに光彩(Glow)、背景なし
-            _apply_text_glow(run._r, glow_color=glow_color_hex)
-            txBox.fill.background()  # 背景を透明に
+            txBox.fill.background()
         else:
             # box: 半透明背景
             fill = txBox.fill
@@ -379,10 +548,16 @@ def embed_audio(
     end_pause_ms: int = 2000,
     slide_timings: dict[int, list[tuple[str, int, int]]] | None = None,
     subtitle_font_size: int = 18,
+    subtitle_font_name: str = "",
     subtitle_bottom_pct: float = 0.05,
     subtitle_style: str = "box",
     subtitle_font_color: str = "FFFFFF",
+    subtitle_use_outline: bool = True,
+    subtitle_outline_color: str = "000000",
+    subtitle_outline_width: float = 0.75,
+    subtitle_use_glow: bool = False,
     subtitle_glow_color: str = "000000",
+    subtitle_glow_size: float = 11.0,
     subtitle_bg_color: str = "000000",
     subtitle_bg_alpha: int = 60,
 ) -> None:
@@ -395,10 +570,16 @@ def embed_audio(
         end_pause_ms: 音声終了後、次スライドに進むまでの待機時間(ms)
         slide_timings: {スライドインデックス: [(文, 開始ms, 長さms), ...]} 字幕タイミング
         subtitle_font_size: 字幕フォントサイズ (pt)
+        subtitle_font_name: 字幕フォント名 (空文字でデフォルト)
         subtitle_bottom_pct: 字幕の下マージン (スライド高さに対する割合)
         subtitle_style: "box" (半透明背景) または "outline" (縁取り)
         subtitle_font_color: 字幕テキストの色 hex RGB (デフォルト: "FFFFFF")
-        subtitle_glow_color: 光彩の色 hex RGB (デフォルト: "000000")
+        subtitle_use_outline: 輪郭を付ける (style="outline" 時, デフォルト: True)
+        subtitle_outline_color: 輪郭の色 hex RGB (デフォルト: "000000")
+        subtitle_outline_width: 輪郭の太さ pt (デフォルト: 0.75)
+        subtitle_use_glow: ぼかしを付ける (style="outline" 時, デフォルト: False)
+        subtitle_glow_color: ぼかしの色 hex RGB (デフォルト: "000000")
+        subtitle_glow_size: ぼかしのサイズ pt (デフォルト: 11.0)
         subtitle_bg_color: 背景色 hex RGB (デフォルト: "000000")
         subtitle_bg_alpha: 背景の不透明度 % (0-100, デフォルト: 60)
     """
@@ -442,10 +623,16 @@ def embed_audio(
             sub_shape_ids, split_timings = _add_subtitle_shapes(
                 slide, timings, prs,
                 font_size=subtitle_font_size,
+                font_name=subtitle_font_name,
                 bottom_margin_pct=subtitle_bottom_pct,
                 style=subtitle_style,
                 font_color=fc,
+                use_outline=subtitle_use_outline,
+                outline_color_hex=subtitle_outline_color,
+                outline_width_pt=subtitle_outline_width,
+                use_glow=subtitle_use_glow,
                 glow_color_hex=subtitle_glow_color,
+                glow_radius_pt=subtitle_glow_size,
                 bg_color=bgc,
                 bg_alpha=subtitle_bg_alpha * 1000,
             )

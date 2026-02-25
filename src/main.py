@@ -96,9 +96,17 @@ def main():
     parser.add_argument("--subtitle-style", choices=["box", "outline"], default="box",
                         help="字幕スタイル: box=半透明背景, outline=縁取り (default: box)")
     parser.add_argument("--subtitle-size", type=int, default=18, help="字幕フォントサイズ (default: 18)")
+    parser.add_argument("--subtitle-font", default="", help="字幕のデフォルトフォント名 (default: テーマ依存)")
     parser.add_argument("--subtitle-bottom", type=float, default=0.05, help="字幕の下マージン (0.0〜1.0, default: 0.05)")
     parser.add_argument("--subtitle-color", default="FFFFFF", help="字幕テキスト色 hex RGB (default: FFFFFF)")
-    parser.add_argument("--subtitle-glow-color", default="000000", help="字幕縁取り色 hex RGB (default: 000000)")
+    parser.add_argument("--subtitle-outline", action=argparse.BooleanOptionalAction, default=True,
+                        help="縁取りスタイル時に輪郭を付ける (default: on)")
+    parser.add_argument("--subtitle-outline-color", default="000000", help="輪郭の色 hex RGB (default: 000000)")
+    parser.add_argument("--subtitle-outline-width", type=float, default=0.75, help="輪郭の太さ pt (default: 0.75)")
+    parser.add_argument("--subtitle-glow", action=argparse.BooleanOptionalAction, default=False,
+                        help="縁取りスタイル時にぼかしを付ける (default: off)")
+    parser.add_argument("--subtitle-glow-color", default="000000", help="ぼかしの色 hex RGB (default: 000000)")
+    parser.add_argument("--subtitle-glow-size", type=float, default=11.0, help="ぼかしのサイズ pt (default: 11.0)")
     parser.add_argument("--subtitle-bg-color", default="000000", help="字幕背景色 hex RGB (default: 000000)")
     parser.add_argument("--subtitle-bg-alpha", type=int, default=60, help="字幕背景の不透明度 %% (0-100, default: 60)")
     parser.add_argument("--list-speakers", action="store_true", help="VOICEVOX話者一覧を表示")
@@ -152,10 +160,16 @@ def main():
         end_pause_ms=int(args.end_pause * 1000),
         slide_timings=slide_timings if need_timings else None,
         subtitle_font_size=args.subtitle_size,
+        subtitle_font_name=args.subtitle_font,
         subtitle_bottom_pct=args.subtitle_bottom,
         subtitle_style=args.subtitle_style,
         subtitle_font_color=args.subtitle_color,
+        subtitle_use_outline=args.subtitle_outline,
+        subtitle_outline_color=args.subtitle_outline_color,
+        subtitle_outline_width=args.subtitle_outline_width,
+        subtitle_use_glow=args.subtitle_glow,
         subtitle_glow_color=args.subtitle_glow_color,
+        subtitle_glow_size=args.subtitle_glow_size,
         subtitle_bg_color=args.subtitle_bg_color,
         subtitle_bg_alpha=args.subtitle_bg_alpha,
     )

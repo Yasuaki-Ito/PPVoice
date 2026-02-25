@@ -25,17 +25,38 @@ _READING_PATTERN = re.compile(r"\{([^|}]+)\|([^}]+)\}")
 # 保護パターン: {テキスト} (|なし) — 文分割を抑制
 _BRACE_PATTERN = re.compile(r"\{([^|}]+)\}")
 
+# 書式タグパターン: <b>, </b>, <i>, </i>, <u>, </u>, <color=#RRGGBB>, </color>, <font=...>, </font>, <br>
+_FORMAT_TAG = re.compile(r"</?(?:b|i|u|color(?:=#[0-9a-fA-F]{6})?|font(?:=[^>]+)?)>|<br\s*/?>", re.IGNORECASE)
+
+# <br> 分割パターン
+_SPLIT_BR = re.compile(r"<br\s*/?>", re.IGNORECASE)
+
+# プレースホルダ: {テキスト} 内の <> をエスケープするための代替文字
+_LT = "\x02"
+_GT = "\x03"
+
 
 def _to_display(text: str) -> str:
-    """{表示|読み} → 表示, {テキスト} → テキスト に変換 (字幕用)。"""
+    """{表示|読み} → 表示, {テキスト} → テキスト に変換 (字幕用)。
+
+    {テキスト} 内の <> はプレースホルダに変換し、
+    書式タグとして解釈されないようにする。
+    """
     text = _READING_PATTERN.sub(r"\1", text)
-    return _BRACE_PATTERN.sub(r"\1", text)
+    # {テキスト} 内の <> をエスケープしてから展開
+    def _escape_brace(m):
+        return m.group(1).replace("<", _LT).replace(">", _GT)
+    return _BRACE_PATTERN.sub(_escape_brace, text)
 
 
 def _to_reading(text: str) -> str:
-    """{表示|読み} → 読み, {テキスト} → テキスト に変換 (TTS用)。"""
+    """{表示|読み} → 読み, {テキスト} → テキスト に変換 (TTS用)。
+
+    書式タグは読み上げに不要なため除去する。
+    """
     text = _READING_PATTERN.sub(r"\2", text)
-    return _BRACE_PATTERN.sub(r"\1", text)
+    text = _BRACE_PATTERN.sub(r"\1", text)
+    return _FORMAT_TAG.sub("", text)
 
 
 def _split_long(text: str, max_len: int = _MAX_CHUNK_LEN) -> list[str]:
@@ -91,7 +112,11 @@ def _split_sentences(text: str) -> list[str]:
     protected = _READING_PATTERN.sub(_protect, text)
     protected = _BRACE_PATTERN.sub(_protect, protected)
 
-    parts = _SPLIT_SENTENCE.split(protected)
+    # <br> で強制分割してから、各パートを句点で分割
+    br_parts = _SPLIT_BR.split(protected)
+    parts = []
+    for bp in br_parts:
+        parts.extend(_SPLIT_SENTENCE.split(bp))
     result = []
     for p in parts:
         p = p.strip()

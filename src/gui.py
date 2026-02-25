@@ -4,7 +4,7 @@ import os
 import sys
 import threading
 import tkinter as tk
-from tkinter import colorchooser, filedialog, messagebox
+from tkinter import colorchooser, filedialog, font as tkfont, messagebox
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -251,6 +251,15 @@ class App(ctk.CTk):
             "write", lambda *_: self.fontsize_label.configure(text=str(self.fontsize_var.get()))
         )
 
+        # フォント名
+        row = ctk.CTkFrame(sec, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=3)
+        ctk.CTkLabel(row, text="フォント", width=120, anchor="w").pack(side="left")
+        self._font_default_label = "<テーマのデフォルト>"
+        self.subtitle_font_var = ctk.StringVar(value=self._font_default_label)
+        ctk.CTkEntry(row, textvariable=self.subtitle_font_var, width=300).pack(side="left", padx=(4, 6))
+        ctk.CTkButton(row, text="選択", width=60, command=self._open_font_picker).pack(side="left")
+
         # 下マージン
         row = ctk.CTkFrame(sec, fg_color="transparent")
         row.pack(fill="x", padx=14, pady=3)
@@ -276,17 +285,56 @@ class App(ctk.CTk):
         )
         self.font_color_btn.pack(side="left", padx=(4, 0))
 
-        # 縁取り色 (outline 時のみ表示)
+        # --- 縁取りオプション (outline 時のみ表示) ---
+        # 輪郭 (チェックボックス + 色 + 太さ)
+        self.outline_row = ctk.CTkFrame(sec, fg_color="transparent")
+        self.use_outline_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(
+            self.outline_row, text="輪郭", variable=self.use_outline_var, width=120,
+        ).pack(side="left")
+        self.outline_color_var = ctk.StringVar(value="#000000")
+        self.outline_color_btn = ctk.CTkButton(
+            self.outline_row, text="#000000", width=90, fg_color="#000000", text_color="#FFFFFF",
+            command=lambda: self._pick_color(self.outline_color_var, self.outline_color_btn),
+        )
+        self.outline_color_btn.pack(side="left", padx=(4, 12))
+        ctk.CTkLabel(self.outline_row, text="太さ", width=30, anchor="w").pack(side="left")
+        self.outline_width_var = ctk.DoubleVar(value=0.75)
+        ctk.CTkSlider(
+            self.outline_row, from_=0.25, to=6.0, number_of_steps=23,
+            variable=self.outline_width_var, width=120,
+        ).pack(side="left", padx=(4, 8))
+        self.outline_width_label = ctk.CTkLabel(self.outline_row, text="0.75", width=36)
+        self.outline_width_label.pack(side="left")
+        self.outline_width_var.trace_add(
+            "write", lambda *_: self.outline_width_label.configure(text=f"{self.outline_width_var.get():.2f}")
+        )
+
+        # ぼかし (チェックボックス + 色 + サイズ)
         self.glow_row = ctk.CTkFrame(sec, fg_color="transparent")
-        ctk.CTkLabel(self.glow_row, text="縁取り色", width=120, anchor="w").pack(side="left")
+        self.use_glow_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(
+            self.glow_row, text="ぼかし", variable=self.use_glow_var, width=120,
+        ).pack(side="left")
         self.glow_color_var = ctk.StringVar(value="#000000")
         self.glow_color_btn = ctk.CTkButton(
             self.glow_row, text="#000000", width=90, fg_color="#000000", text_color="#FFFFFF",
             command=lambda: self._pick_color(self.glow_color_var, self.glow_color_btn),
         )
-        self.glow_color_btn.pack(side="left", padx=(4, 0))
+        self.glow_color_btn.pack(side="left", padx=(4, 12))
+        ctk.CTkLabel(self.glow_row, text="サイズ", width=40, anchor="w").pack(side="left")
+        self.glow_size_var = ctk.DoubleVar(value=11.0)
+        ctk.CTkSlider(
+            self.glow_row, from_=1.0, to=30.0, number_of_steps=29,
+            variable=self.glow_size_var, width=120,
+        ).pack(side="left", padx=(4, 8))
+        self.glow_size_label = ctk.CTkLabel(self.glow_row, text="11.0", width=30)
+        self.glow_size_label.pack(side="left")
+        self.glow_size_var.trace_add(
+            "write", lambda *_: self.glow_size_label.configure(text=f"{self.glow_size_var.get():.1f}")
+        )
 
-        # 背景色・透過度 (box 時のみ表示)
+        # --- 背景オプション (box 時のみ表示) ---
         self.bg_row = ctk.CTkFrame(sec, fg_color="transparent")
         ctk.CTkLabel(self.bg_row, text="背景色", width=120, anchor="w").pack(side="left")
         self.bg_color_var = ctk.StringVar(value="#000000")
@@ -502,11 +550,69 @@ class App(ctk.CTk):
             self.style_speaker_menu.configure(values=["---"])
             self.style_speaker_menu.set("---")
 
+    def _open_font_picker(self):
+        families = sorted(
+            (f for f in set(tkfont.families()) if not f.startswith("@")),
+            key=str.lower,
+        )
+        all_fonts = [self._font_default_label] + families
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("フォント選択")
+        dialog.geometry("400x500")
+        dialog.resizable(True, True)
+        dialog.grab_set()
+
+        # 検索
+        search_var = ctk.StringVar()
+        ctk.CTkEntry(
+            dialog, textvariable=search_var, placeholder_text="検索...",
+        ).pack(fill="x", padx=10, pady=(10, 6))
+
+        # リスト
+        list_frame = ctk.CTkFrame(dialog, fg_color="transparent")
+        list_frame.pack(fill="both", expand=True, padx=10, pady=(0, 6))
+
+        listbox = tk.Listbox(list_frame, font=("", 11), activestyle="dotbox")
+        scrollbar = tk.Scrollbar(list_frame, orient="vertical", command=listbox.yview)
+        listbox.configure(yscrollcommand=scrollbar.set)
+        scrollbar.pack(side="right", fill="y")
+        listbox.pack(side="left", fill="both", expand=True)
+
+        def populate(query=""):
+            listbox.delete(0, "end")
+            q = query.lower()
+            for f in all_fonts:
+                if q in f.lower():
+                    listbox.insert("end", f)
+            # 現在の選択をハイライト
+            current = self.subtitle_font_var.get()
+            items = listbox.get(0, "end")
+            if current in items:
+                idx = list(items).index(current)
+                listbox.selection_set(idx)
+                listbox.see(idx)
+
+        populate()
+        search_var.trace_add("write", lambda *_: populate(search_var.get()))
+
+        def on_ok():
+            sel = listbox.curselection()
+            if sel:
+                self.subtitle_font_var.set(listbox.get(sel[0]))
+            dialog.destroy()
+
+        listbox.bind("<Double-1>", lambda e: on_ok())
+
+        ctk.CTkButton(dialog, text="OK", width=120, command=on_ok).pack(pady=(0, 10))
+
     def _on_style_changed(self):
         if self.style_var.get() == "outline":
             self.bg_row.pack_forget()
+            self.outline_row.pack(fill="x", padx=14, pady=3)
             self.glow_row.pack(fill="x", padx=14, pady=3)
         else:
+            self.outline_row.pack_forget()
             self.glow_row.pack_forget()
             self.bg_row.pack(fill="x", padx=14, pady=3)
 
@@ -624,8 +730,15 @@ class App(ctk.CTk):
         sub_style = self.style_var.get()
         sub_size = self.fontsize_var.get()
         sub_bottom = self.bottom_var.get()
+        _font_sel = self.subtitle_font_var.get().strip()
+        sub_font_name = "" if _font_sel == self._font_default_label else _font_sel
         sub_font_color = self.font_color_var.get().lstrip("#")
+        sub_use_outline = self.use_outline_var.get()
+        sub_outline_color = self.outline_color_var.get().lstrip("#")
+        sub_outline_width = self.outline_width_var.get()
+        sub_use_glow = self.use_glow_var.get()
         sub_glow_color = self.glow_color_var.get().lstrip("#")
+        sub_glow_size = self.glow_size_var.get()
         sub_bg_color = self.bg_color_var.get().lstrip("#")
         sub_bg_alpha = self.bg_alpha_var.get()
 
@@ -691,10 +804,16 @@ class App(ctk.CTk):
             end_pause_ms=int(end_pause_sec * 1000),
             slide_timings=slide_timings if need_timings else None,
             subtitle_font_size=sub_size,
+            subtitle_font_name=sub_font_name,
             subtitle_bottom_pct=sub_bottom,
             subtitle_style=sub_style,
             subtitle_font_color=sub_font_color,
+            subtitle_use_outline=sub_use_outline,
+            subtitle_outline_color=sub_outline_color,
+            subtitle_outline_width=sub_outline_width,
+            subtitle_use_glow=sub_use_glow,
             subtitle_glow_color=sub_glow_color,
+            subtitle_glow_size=sub_glow_size,
             subtitle_bg_color=sub_bg_color,
             subtitle_bg_alpha=sub_bg_alpha,
         )

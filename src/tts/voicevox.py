@@ -42,14 +42,14 @@ def _to_display(text: str) -> str:
     書式タグとして解釈されないようにする。
     """
     text = _READING_PATTERN.sub(r"\1", text)
-    # <wait> タグを除去
-    text = _WAIT_TAG.sub("", text)
-    # <br> → 改行
-    text = _SPLIT_BR.sub("\n", text)
-    # {テキスト} 内の <> をエスケープしてから展開
+    # {テキスト} 内の <> をエスケープしてから展開 (先にやらないと中のタグが消える)
     def _escape_brace(m):
         return m.group(1).replace("<", _LT).replace(">", _GT)
-    return _BRACE_PATTERN.sub(_escape_brace, text)
+    text = _BRACE_PATTERN.sub(_escape_brace, text)
+    # <wait> タグを除去 (エスケープ済みのものはマッチしない)
+    text = _WAIT_TAG.sub("", text)
+    # <br> → 改行 (エスケープ済みのものはマッチしない)
+    return _SPLIT_BR.sub("\n", text)
 
 
 def _to_reading(text: str) -> str:
@@ -62,17 +62,18 @@ def _to_reading(text: str) -> str:
     return _FORMAT_TAG.sub("", text)
 
 
-def _split_sentences(text: str) -> tuple[list[str], list[float | None]]:
+def _split_sentences(text: str) -> tuple[list[str], list[float | None], float]:
     """テキストを改行と <wait=Ns> で分割する。
 
     <br> は分割せず保持する（字幕でテキストボックス内改行になる）。
     {...} ブロック内の改行で分割しないよう保護する。
 
     Returns:
-        (sentences, pauses)
+        (sentences, pauses, leading_pause)
         - sentences: 分割された文のリスト
         - pauses: 各文の後の無音秒数 (len = len(sentences) - 1)
           None はデフォルト pause_sec を使用、float は指定秒数
+        - leading_pause: 最初の文の前の無音秒数 (0.0 = なし)
     """
     # {...|...} と {...} をプレースホルダに置換して分割から保護
     placeholders: list[str] = []
@@ -87,6 +88,8 @@ def _split_sentences(text: str) -> tuple[list[str], list[float | None]]:
     # 改行で分割 → 各行を <wait=Ns> でさらに分割
     sentences: list[str] = []
     pauses: list[float | None] = []
+    pending_wait: float | None = None  # 次の文との間に入れるwait
+    leading_pause: float = 0.0
 
     lines = protected.split("\n")
     for li, line in enumerate(lines):
@@ -103,18 +106,22 @@ def _split_sentences(text: str) -> tuple[list[str], list[float | None]]:
                 chunk = parts[pi].strip()
                 if chunk:
                     if sentences:
-                        pauses.append(None)  # デフォルトポーズ
+                        pauses.append(pending_wait)
+                    elif pending_wait is not None:
+                        leading_pause += pending_wait
+                    pending_wait = None
                     sentences.append(chunk)
             elif pi % 3 == 1:
                 # 数値部分 (次の pi % 3 == 2 が単位)
                 num = float(parts[pi])
                 unit = (parts[pi + 1] or "").lower()
                 wait_sec = num / 1000 if unit == "ms" else num
-                if pauses:
-                    pauses[-1] = wait_sec
+                if pending_wait is None:
+                    pending_wait = wait_sec
+                else:
+                    pending_wait += wait_sec
             # pi % 3 == 2 は単位 (pi % 3 == 1 で処理済み)
             pi += 1
-        # 改行による分割 → 次の行との間はデフォルトポーズ
 
     # プレースホルダを復元
     def _restore(s):
@@ -122,7 +129,7 @@ def _split_sentences(text: str) -> tuple[list[str], list[float | None]]:
             s = s.replace(f"\x00{i}\x00", orig)
         return s
 
-    return [_restore(s) for s in sentences], pauses
+    return [_restore(s) for s in sentences], pauses, leading_pause
 
 
 def _make_silence(params, duration_sec: float) -> bytes:
@@ -135,11 +142,13 @@ def _concat_wav(
     wav_chunks: list[bytes],
     pauses: list[float],
     sentences: list[str] | None = None,
+    leading_pause: float = 0.0,
 ) -> tuple[bytes, list[tuple[str, int, int]]]:
     """複数のWAVバイナリを1つに結合する。
 
     Args:
         pauses: 各チャンク間の無音秒数 (len = len(wav_chunks) - 1)
+        leading_pause: 最初のチャンクの前に挿入する無音秒数
 
     Returns:
         (結合WAV, [(文テキスト, 開始ms, 長さms), ...])
@@ -154,6 +163,10 @@ def _concat_wav(
             with wave.open(f, "rb") as w:
                 if params is None:
                     params = w.getparams()
+                    # 先頭の無音を挿入
+                    if leading_pause > 0:
+                        all_frames += _make_silence(params, leading_pause)
+                        current_ms += int(leading_pause * 1000)
                 frames = w.readframes(w.getnframes())
                 chunk_ms = int(w.getnframes() / w.getframerate() * 1000)
 
@@ -169,7 +182,7 @@ def _concat_wav(
                 all_frames += _make_silence(params, gap)
                 current_ms += int(gap * 1000)
 
-    if len(wav_chunks) == 1 and not pauses:
+    if len(wav_chunks) == 1 and not pauses and leading_pause <= 0:
         return wav_chunks[0], timings
 
     out = io.BytesIO()
@@ -247,7 +260,7 @@ class VoicevoxEngine(TTSEngine):
         if not text:
             return b"", []
 
-        sentences, pause_gaps = _split_sentences(text)
+        sentences, pause_gaps, leading_pause = _split_sentences(text)
         if not sentences:
             return b"", []
 
@@ -275,7 +288,7 @@ class VoicevoxEngine(TTSEngine):
         # --- multi_synthesis で一括合成 ---
         wav_chunks = self._multi_synthesis(queries)
 
-        return _concat_wav(wav_chunks, pauses=pauses, sentences=display_sentences)
+        return _concat_wav(wav_chunks, pauses=pauses, sentences=display_sentences, leading_pause=leading_pause)
 
     def list_speakers(self) -> list[dict]:
         """利用可能な話者一覧を取得する。"""

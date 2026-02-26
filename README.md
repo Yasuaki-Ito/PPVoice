@@ -86,6 +86,7 @@ PPVoice で生成した音声付きPPTXは、PowerPoint の標準機能で動画
 | `<color=#RRGGBB>...</color>` | 文字色 |
 | `<font=フォント名>...</font>` | フォント変更 |
 | `<br>` | 字幕内の改行 |
+| `<wait=N>` | 無音を挿入（`<wait=1s>`, `<wait=500ms>` など） |
 
 ```
 これは<color=#FF0000>重要な</color>ポイントです。

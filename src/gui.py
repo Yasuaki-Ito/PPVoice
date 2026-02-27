@@ -1,9 +1,11 @@
 """PowerPoint自動スピーチツール GUI (customtkinter)"""
 
 import os
+import re
 import sys
 import threading
 import tkinter as tk
+import winsound
 from tkinter import colorchooser, filedialog, font as tkfont, messagebox
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -49,8 +51,8 @@ class App(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title(f"PPVoice v{__version__}")
-        self.geometry("700x820")
-        self.minsize(600, 700)
+        self.geometry("1050x650")
+        self.minsize(960, 500)
 
         # アイコン設定 (src/ 内 → ルート の順で探す)
         for _d in [os.path.dirname(__file__), os.path.join(os.path.dirname(__file__), "..")]:
@@ -64,6 +66,8 @@ class App(ctk.CTk):
         self._styles_by_speaker: dict[str, list[tuple[str, int]]] = {}
         self._running = False
         self._cancel_event = threading.Event()
+        self._pending_speaker: str | None = None
+        self._pending_style: str | None = None
 
         self._build_ui()
         self.input_var.trace_add("write", lambda *_: self._update_run_btn())
@@ -74,13 +78,31 @@ class App(ctk.CTk):
     # ------------------------------------------------------------------
 
     def _build_ui(self):
-        wrapper = ctk.CTkScrollableFrame(self, fg_color="transparent")
-        wrapper.pack(fill="both", expand=True, padx=16, pady=16)
+        # 2カラムレイアウト: 左=設定, 右=生成・ログ
+        container = ctk.CTkFrame(self, fg_color="transparent")
+        container.pack(fill="both", expand=True, padx=16, pady=16)
+        container.grid_columnconfigure(0, weight=3, minsize=560)
+        container.grid_columnconfigure(1, weight=2, minsize=280)
+        container.grid_rowconfigure(0, weight=1)
 
-        self._build_file_section(wrapper)
-        self._build_voice_section(wrapper)
-        self._build_subtitle_section(wrapper)
-        self._build_action_section(wrapper)
+        # 左カラム (スクロール可能な設定パネル)
+        left = ctk.CTkScrollableFrame(container, fg_color="transparent")
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+
+        self._build_file_section(left)
+        self._build_voice_section(left)
+        self._build_subtitle_section(left)
+
+        # 設定保存ボタン (左カラム最下部)
+        ctk.CTkButton(
+            left, text="設定保存", width=100, height=30, command=self._on_save_config,
+        ).pack(anchor="e", padx=14, pady=(8, 4))
+
+        # 右カラム (生成・ログ)
+        right = ctk.CTkFrame(container, fg_color="transparent")
+        right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+
+        self._build_action_section(right)
 
     def _section_header(self, parent, text):
         """セクションヘッダーを作成する。"""
@@ -102,7 +124,7 @@ class App(ctk.CTk):
         row.pack(fill="x", padx=14, pady=3)
         ctk.CTkLabel(row, text="入力ファイル (.pptx)", width=140, anchor="w").pack(side="left")
         self.input_var = ctk.StringVar()
-        ctk.CTkEntry(row, textvariable=self.input_var, width=380).pack(side="left", padx=(4, 6))
+        ctk.CTkEntry(row, textvariable=self.input_var).pack(side="left", fill="x", expand=True, padx=(4, 6))
         ctk.CTkButton(row, text="参照", width=60, command=self._browse_input).pack(side="left")
 
         # 出力ファイル
@@ -110,7 +132,7 @@ class App(ctk.CTk):
         row.pack(fill="x", padx=14, pady=3)
         ctk.CTkLabel(row, text="出力ファイル (.pptx)", width=140, anchor="w").pack(side="left")
         self.output_var = ctk.StringVar()
-        ctk.CTkEntry(row, textvariable=self.output_var, width=380).pack(side="left", padx=(4, 6))
+        ctk.CTkEntry(row, textvariable=self.output_var).pack(side="left", fill="x", expand=True, padx=(4, 6))
         ctk.CTkButton(row, text="参照", width=60, command=self._browse_output).pack(side="left")
 
         # スライド範囲
@@ -147,7 +169,7 @@ class App(ctk.CTk):
         row.pack(fill="x", padx=14, pady=3)
         ctk.CTkLabel(row, text="VOICEVOX URL", width=120, anchor="w").pack(side="left")
         self.url_var = ctk.StringVar(value="http://localhost:50021")
-        ctk.CTkEntry(row, textvariable=self.url_var, width=280).pack(side="left", padx=(4, 6))
+        ctk.CTkEntry(row, textvariable=self.url_var).pack(side="left", fill="x", expand=True, padx=(4, 6))
         ctk.CTkButton(row, text="話者取得", width=80, command=self._fetch_speakers).pack(side="left")
 
         # 話者選択
@@ -155,19 +177,33 @@ class App(ctk.CTk):
         row.pack(fill="x", padx=14, pady=3)
         ctk.CTkLabel(row, text="話者", width=120, anchor="w").pack(side="left")
         self.speaker_menu = ctk.CTkComboBox(
-            row, values=["(話者取得を押してください)"], width=380,
+            row, values=["(話者取得を押してください)"],
             command=self._on_speaker_changed, state="readonly",
         )
-        self.speaker_menu.pack(side="left", padx=(4, 0))
+        self.speaker_menu.pack(side="left", fill="x", expand=True, padx=(4, 0))
 
         # スタイル選択
         row = ctk.CTkFrame(sec, fg_color="transparent")
         row.pack(fill="x", padx=14, pady=3)
         ctk.CTkLabel(row, text="スタイル", width=120, anchor="w").pack(side="left")
         self.style_speaker_menu = ctk.CTkComboBox(
-            row, values=["---"], width=380, state="readonly",
+            row, values=["---"], state="readonly",
         )
-        self.style_speaker_menu.pack(side="left", padx=(4, 0))
+        self.style_speaker_menu.pack(side="left", fill="x", expand=True, padx=(4, 0))
+
+        # テスト再生
+        row = ctk.CTkFrame(sec, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=3)
+        ctk.CTkLabel(row, text="テスト", width=120, anchor="w").pack(side="left")
+        self.test_text_var = ctk.StringVar(value="音声のテストです。")
+        ctk.CTkEntry(
+            row, textvariable=self.test_text_var,
+        ).pack(side="left", fill="x", expand=True, padx=(4, 6))
+        self.test_play_btn = ctk.CTkButton(
+            row, text="▶ 再生", width=80, command=self._on_test_play,
+            state="disabled",
+        )
+        self.test_play_btn.pack(side="left")
 
         # VOICEVOX 利用規約リンク
         row = ctk.CTkFrame(sec, fg_color="transparent")
@@ -189,8 +225,8 @@ class App(ctk.CTk):
         row.pack(fill="x", padx=14, pady=3)
         ctk.CTkLabel(row, text="文間の間 (秒)", width=120, anchor="w").pack(side="left")
         self.pause_var = ctk.DoubleVar(value=0.5)
-        ctk.CTkSlider(row, from_=0.0, to=3.0, number_of_steps=30, variable=self.pause_var, width=300).pack(
-            side="left", padx=(4, 8)
+        ctk.CTkSlider(row, from_=0.0, to=3.0, number_of_steps=30, variable=self.pause_var).pack(
+            side="left", fill="x", expand=True, padx=(4, 8)
         )
         self.pause_label = ctk.CTkLabel(row, text="0.5", width=40)
         self.pause_label.pack(side="left")
@@ -201,8 +237,8 @@ class App(ctk.CTk):
         row.pack(fill="x", padx=14, pady=(3, 12))
         ctk.CTkLabel(row, text="終了後の間 (秒)", width=120, anchor="w").pack(side="left")
         self.end_pause_var = ctk.DoubleVar(value=2.0)
-        ctk.CTkSlider(row, from_=0.0, to=10.0, number_of_steps=100, variable=self.end_pause_var, width=300).pack(
-            side="left", padx=(4, 8)
+        ctk.CTkSlider(row, from_=0.0, to=10.0, number_of_steps=100, variable=self.end_pause_var).pack(
+            side="left", fill="x", expand=True, padx=(4, 8)
         )
         self.end_pause_label = ctk.CTkLabel(row, text="2.0", width=40)
         self.end_pause_label.pack(side="left")
@@ -242,8 +278,8 @@ class App(ctk.CTk):
         row.pack(fill="x", padx=14, pady=3)
         ctk.CTkLabel(row, text="フォントサイズ", width=120, anchor="w").pack(side="left")
         self.fontsize_var = ctk.IntVar(value=18)
-        ctk.CTkSlider(row, from_=10, to=48, number_of_steps=38, variable=self.fontsize_var, width=300).pack(
-            side="left", padx=(4, 8)
+        ctk.CTkSlider(row, from_=10, to=48, number_of_steps=38, variable=self.fontsize_var).pack(
+            side="left", fill="x", expand=True, padx=(4, 8)
         )
         self.fontsize_label = ctk.CTkLabel(row, text="18", width=40)
         self.fontsize_label.pack(side="left")
@@ -257,7 +293,7 @@ class App(ctk.CTk):
         ctk.CTkLabel(row, text="フォント", width=120, anchor="w").pack(side="left")
         self._font_default_label = "<テーマのデフォルト>"
         self.subtitle_font_var = ctk.StringVar(value=self._font_default_label)
-        ctk.CTkEntry(row, textvariable=self.subtitle_font_var, width=300).pack(side="left", padx=(4, 6))
+        ctk.CTkEntry(row, textvariable=self.subtitle_font_var).pack(side="left", fill="x", expand=True, padx=(4, 6))
         ctk.CTkButton(row, text="選択", width=60, command=self._open_font_picker).pack(side="left")
 
         # 下マージン
@@ -265,8 +301,8 @@ class App(ctk.CTk):
         row.pack(fill="x", padx=14, pady=3)
         ctk.CTkLabel(row, text="下マージン", width=120, anchor="w").pack(side="left")
         self.bottom_var = ctk.DoubleVar(value=0.05)
-        ctk.CTkSlider(row, from_=0.0, to=0.3, number_of_steps=30, variable=self.bottom_var, width=300).pack(
-            side="left", padx=(4, 8)
+        ctk.CTkSlider(row, from_=0.0, to=0.3, number_of_steps=30, variable=self.bottom_var).pack(
+            side="left", fill="x", expand=True, padx=(4, 8)
         )
         self.bottom_label = ctk.CTkLabel(row, text="0.05", width=40)
         self.bottom_label.pack(side="left")
@@ -361,7 +397,7 @@ class App(ctk.CTk):
     # --- 実行 / ログ ---
     def _build_action_section(self, parent):
         sec = ctk.CTkFrame(parent)
-        sec.pack(fill="x", pady=(0, 0))
+        sec.pack(fill="both", expand=True)
 
         self.run_btn = ctk.CTkButton(
             sec, text="生成開始", font=ctk.CTkFont(size=15, weight="bold"),
@@ -370,10 +406,10 @@ class App(ctk.CTk):
         self.run_btn.pack(fill="x", padx=14, pady=(14, 8))
 
         self.progress = ctk.CTkProgressBar(sec, height=6, corner_radius=3)
-        self.progress.pack(fill="x", padx=14, pady=(0, 8))
         self.progress.set(0)
+        # 初期状態では非表示 (生成開始時に表示)
 
-        self.log_box = ctk.CTkTextbox(sec, height=200, state="disabled", font=ctk.CTkFont(size=12))
+        self.log_box = ctk.CTkTextbox(sec, state="disabled", font=ctk.CTkFont(size=12))
         self.log_box.pack(fill="both", expand=True, padx=14, pady=(0, 14))
 
     # ------------------------------------------------------------------
@@ -387,6 +423,16 @@ class App(ctk.CTk):
             if not self.output_var.get():
                 base = os.path.splitext(path)[0]
                 self.output_var.set(base + "_speech.pptx")
+            # <config> タグの自動読み込み
+            try:
+                slides = read_slides(path)
+                notes = [s.notes_text for s in slides if s.notes_text]
+                config = self._parse_config_tags(notes)
+                if config:
+                    self._apply_config(config)
+                    self._log(f"設定タグを読み込みました。\n")
+            except Exception:
+                pass
 
     def _on_slide_range_changed(self):
         if self.slide_range_var.get() == "select":
@@ -530,6 +576,8 @@ class App(ctk.CTk):
             self.speaker_menu.set(speaker_names[0])
             self._on_speaker_changed(speaker_names[0])
             self._log(f"{len(speakers)} 話者 ({total_styles} スタイル) を取得しました。\n")
+            # pending speaker の適用
+            self._apply_pending_speaker()
         else:
             self._log("話者が見つかりませんでした。\n")
         self._update_run_btn()
@@ -549,6 +597,227 @@ class App(ctk.CTk):
         else:
             self.style_speaker_menu.configure(values=["---"])
             self.style_speaker_menu.set("---")
+
+    # ------------------------------------------------------------------
+    # テスト再生
+    # ------------------------------------------------------------------
+
+    def _on_test_play(self):
+        btn_text = self.test_play_btn.cget("text")
+        if btn_text == "■ 停止":
+            winsound.PlaySound(None, winsound.SND_PURGE)
+            self._test_play_reset()
+            return
+
+        text = self.test_text_var.get().strip()
+        if not text:
+            return
+        if not self._speaker_map:
+            self._log("先に話者を取得してください。\n")
+            return
+
+        style_label = self.style_speaker_menu.get()
+        speaker_id = self._speaker_map.get(style_label, 1)
+        url = self.url_var.get().strip()
+
+        self.test_play_btn.configure(text="合成中...", state="disabled")
+        thread = threading.Thread(
+            target=self._test_play_worker,
+            args=(text, speaker_id, url),
+            daemon=True,
+        )
+        thread.start()
+
+    def _test_play_worker(self, text, speaker_id, url):
+        try:
+            engine = VoicevoxEngine(speaker_id=speaker_id, base_url=url)
+            wav = engine.synthesize(text)
+            self.after(0, lambda: self.test_play_btn.configure(text="■ 停止", state="normal"))
+            # SND_MEMORY は同期再生 (再生完了 or SND_PURGE で停止するまでブロック)
+            winsound.PlaySound(wav, winsound.SND_MEMORY)
+        except Exception as e:
+            self.after(0, lambda: self._log(f"テスト再生エラー: {e}\n"))
+        finally:
+            self.after(0, self._test_play_reset)
+
+    def _test_play_reset(self):
+        state = "normal" if self._speaker_map else "disabled"
+        self.test_play_btn.configure(text="▶ 再生", state=state)
+
+    # ------------------------------------------------------------------
+    # <config> タグ
+    # ------------------------------------------------------------------
+
+    _CONFIG_RE = re.compile(r"<config\s([^>]*)>", re.IGNORECASE)
+    _KV_RE = re.compile(r'([\w]+)=(?:"([^"]*)"|(\S+))')
+
+    def _parse_config_tags(self, notes_list: list[str]) -> dict:
+        """複数のノートテキストから <config ...> タグを解析し設定 dict を返す。"""
+        config: dict[str, str] = {}
+        for notes in notes_list:
+            for m in self._CONFIG_RE.finditer(notes):
+                for kv in self._KV_RE.finditer(m.group(1)):
+                    key = kv.group(1)
+                    val = kv.group(2) if kv.group(2) is not None else kv.group(3)
+                    config[key] = val
+        return config
+
+    def _apply_config(self, config: dict):
+        """解析済み config dict を GUI ウィジェットに適用する。"""
+        # 話者は pending に保存 (一覧取得後に適用)
+        if "speaker" in config:
+            self._pending_speaker = config["speaker"]
+        if "style" in config:
+            self._pending_style = config["style"]
+        # すでに話者一覧がある場合は即適用
+        if self._styles_by_speaker:
+            self._apply_pending_speaker()
+
+        # --- 音声設定 ---
+        if "pause" in config:
+            self.pause_var.set(float(config["pause"]))
+        if "end_pause" in config:
+            self.end_pause_var.set(float(config["end_pause"]))
+
+        # --- 字幕設定 ---
+        if "subtitle" in config:
+            self.subtitle_var.set(config["subtitle"].lower() in ("on", "true", "1"))
+        if "subtitle_style" in config:
+            self.style_var.set(config["subtitle_style"])
+            self._on_style_changed()
+        if "fontsize" in config:
+            self.fontsize_var.set(int(config["fontsize"]))
+        if "font" in config:
+            val = config["font"]
+            self.subtitle_font_var.set(val if val else self._font_default_label)
+        if "bottom" in config:
+            self.bottom_var.set(float(config["bottom"]))
+        if "font_color" in config:
+            self._set_color(config["font_color"], self.font_color_var, self.font_color_btn)
+        if "outline" in config:
+            self.use_outline_var.set(config["outline"].lower() in ("on", "true", "1"))
+        if "outline_color" in config:
+            self._set_color(config["outline_color"], self.outline_color_var, self.outline_color_btn)
+        if "outline_width" in config:
+            self.outline_width_var.set(float(config["outline_width"]))
+        if "glow" in config:
+            self.use_glow_var.set(config["glow"].lower() in ("on", "true", "1"))
+        if "glow_color" in config:
+            self._set_color(config["glow_color"], self.glow_color_var, self.glow_color_btn)
+        if "glow_size" in config:
+            self.glow_size_var.set(float(config["glow_size"]))
+        if "bg_color" in config:
+            self._set_color(config["bg_color"], self.bg_color_var, self.bg_color_btn)
+        if "bg_alpha" in config:
+            self.bg_alpha_var.set(int(config["bg_alpha"]))
+
+    def _set_color(self, hex_val: str, var: ctk.StringVar, btn: ctk.CTkButton):
+        """色の変数とボタン表示を更新する。"""
+        if not hex_val.startswith("#"):
+            hex_val = "#" + hex_val
+        hex_val = hex_val.upper()
+        var.set(hex_val)
+        btn.configure(text=hex_val, fg_color=hex_val)
+        try:
+            r, g, b = int(hex_val[1:3], 16), int(hex_val[3:5], 16), int(hex_val[5:7], 16)
+            text_col = "#000000" if (r * 0.299 + g * 0.587 + b * 0.114) > 128 else "#FFFFFF"
+            btn.configure(text_color=text_col)
+        except ValueError:
+            pass
+
+    def _apply_pending_speaker(self):
+        """pending の話者・スタイル名を一覧から探して選択する。"""
+        if self._pending_speaker:
+            for display_name in (self.speaker_menu.cget("values") or []):
+                name = display_name.rsplit(" (", 1)[0]
+                if name == self._pending_speaker:
+                    self.speaker_menu.set(display_name)
+                    self._on_speaker_changed(display_name)
+                    break
+            self._pending_speaker = None
+
+        if self._pending_style:
+            for label in (self.style_speaker_menu.cget("values") or []):
+                # "スタイル名 (ID=X)" から先頭のスタイル名を取得
+                style_name = label.rsplit(" (ID=", 1)[0]
+                if style_name == self._pending_style:
+                    self.style_speaker_menu.set(label)
+                    break
+            self._pending_style = None
+
+    def _generate_config_tag(self) -> str:
+        """現在の GUI 設定を <config ...> タグ文字列として生成する。"""
+        parts: list[str] = []
+
+        def _add(key, val):
+            s = str(val)
+            if " " in s or not s:
+                parts.append(f'{key}="{s}"')
+            else:
+                parts.append(f"{key}={s}")
+
+        # 話者
+        speaker_display = self.speaker_menu.get()
+        if speaker_display and " (" in speaker_display:
+            _add("speaker", speaker_display.rsplit(" (", 1)[0])
+        style_display = self.style_speaker_menu.get()
+        if style_display and " (ID=" in style_display:
+            _add("style", style_display.rsplit(" (ID=", 1)[0])
+
+        # 音声
+        _add("pause", f"{self.pause_var.get():.1f}")
+        _add("end_pause", f"{self.end_pause_var.get():.1f}")
+
+        # 字幕
+        _add("subtitle", "on" if self.subtitle_var.get() else "off")
+        _add("subtitle_style", self.style_var.get())
+        _add("fontsize", self.fontsize_var.get())
+        font_val = self.subtitle_font_var.get()
+        _add("font", "" if font_val == self._font_default_label else font_val)
+        _add("bottom", f"{self.bottom_var.get():.2f}")
+        _add("font_color", self.font_color_var.get())
+        _add("outline", "on" if self.use_outline_var.get() else "off")
+        _add("outline_color", self.outline_color_var.get())
+        _add("outline_width", f"{self.outline_width_var.get():.2f}")
+        _add("glow", "on" if self.use_glow_var.get() else "off")
+        _add("glow_color", self.glow_color_var.get())
+        _add("glow_size", f"{self.glow_size_var.get():.1f}")
+        _add("bg_color", self.bg_color_var.get())
+        _add("bg_alpha", self.bg_alpha_var.get())
+
+        return "<config " + " ".join(parts) + ">"
+
+    def _on_save_config(self):
+        """設定保存ポップアップを表示する。"""
+        tag = self._generate_config_tag()
+
+        dialog = ctk.CTkToplevel(self)
+        dialog.title("設定保存")
+        dialog.geometry("600x220")
+        dialog.resizable(True, False)
+        dialog.grab_set()
+
+        ctk.CTkLabel(
+            dialog,
+            text="以下のタグを PPTX の任意のスライドのノート欄に貼り付けると、\nファイルを開いた際に設定が自動的に読み込まれます。",
+            font=ctk.CTkFont(size=12),
+            justify="left",
+        ).pack(padx=16, pady=(16, 8), anchor="w")
+
+        text_box = ctk.CTkTextbox(dialog, height=80, font=ctk.CTkFont(size=11), wrap="word")
+        text_box.pack(fill="x", padx=16, pady=(0, 8))
+        text_box.insert("1.0", tag)
+        text_box.tag_add("sel", "1.0", "end-1c")
+        text_box.configure(state="disabled")
+
+        def on_copy():
+            self.clipboard_clear()
+            self.clipboard_append(tag)
+            copy_btn.configure(text="コピーしました")
+            dialog.after(1500, lambda: copy_btn.configure(text="コピー"))
+
+        copy_btn = ctk.CTkButton(dialog, text="コピー", width=120, command=on_copy)
+        copy_btn.pack(pady=(0, 16))
 
     def _open_font_picker(self):
         families = sorted(
@@ -643,7 +912,7 @@ class App(ctk.CTk):
     # ------------------------------------------------------------------
 
     def _update_run_btn(self):
-        """入力ファイル・話者選択の状態に応じて生成ボタンの有効/無効を切り替える。"""
+        """入力ファイル・話者選択の状態に応じてボタンの有効/無効を切り替える。"""
         if self._running:
             return
         input_ok = bool(self.input_var.get().strip())
@@ -652,6 +921,10 @@ class App(ctk.CTk):
             self.run_btn.configure(state="normal")
         else:
             self.run_btn.configure(state="disabled")
+        # テスト再生ボタン (再生中/合成中でなければ話者の有無で制御)
+        btn_text = self.test_play_btn.cget("text")
+        if btn_text == "▶ 再生":
+            self.test_play_btn.configure(state="normal" if speaker_ok else "disabled")
 
     def _on_run(self):
         if self._running:
@@ -684,6 +957,7 @@ class App(ctk.CTk):
         self._log_clear()
         self.run_btn.configure(text="停止", fg_color="#EF4444", hover_color="#DC2626")
         self.progress.set(0)
+        self.progress.pack(fill="x", padx=14, pady=(0, 8), before=self.log_box)
 
         thread = threading.Thread(target=self._run_generate, daemon=True)
         thread.start()
@@ -704,6 +978,7 @@ class App(ctk.CTk):
     def _on_done(self):
         self._running = False
         self._cancel_event.clear()
+        self.progress.pack_forget()
         self.run_btn.configure(
             text="生成開始",
             fg_color=ctk.ThemeManager.theme["CTkButton"]["fg_color"],

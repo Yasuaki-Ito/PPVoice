@@ -16,11 +16,14 @@ _READING_PATTERN = re.compile(r"\{([^|}]+)\|([^}]+)\}")
 _BRACE_PATTERN = re.compile(r"\{([^|}]+)\}")
 
 # 書式タグパターン: <b>, </b>, <i>, </i>, <u>, </u>, <color=#RRGGBB>, </color>,
-# <font=...>, </font>, <br>, <wait=Ns>
+# <font=...>, </font>, <br>, <wait=Ns>, <config ...>
 _FORMAT_TAG = re.compile(
-    r"</?(?:b|i|u|color(?:=#[0-9a-fA-F]{6})?|font(?:=[^>]+)?)>|<br\s*/?>|<wait=[\d.]+\s*(?:ms|s)?\s*>",
+    r"</?(?:b|i|u|color(?:=#[0-9a-fA-F]{6})?|font(?:=[^>]+)?)>|<br\s*/?>|<wait=[\d.]+\s*(?:ms|s)?\s*>|<config\s[^>]*>",
     re.IGNORECASE,
 )
+
+# <config ...> タグ
+_CONFIG_TAG = re.compile(r"<config\s[^>]*>", re.IGNORECASE)
 
 # <br> 分割パターン
 _SPLIT_BR = re.compile(r"<br\s*/?>", re.IGNORECASE)
@@ -46,8 +49,9 @@ def _to_display(text: str) -> str:
     def _escape_brace(m):
         return m.group(1).replace("<", _LT).replace(">", _GT)
     text = _BRACE_PATTERN.sub(_escape_brace, text)
-    # <wait> タグを除去 (エスケープ済みのものはマッチしない)
+    # <wait>, <config> タグを除去 (エスケープ済みのものはマッチしない)
     text = _WAIT_TAG.sub("", text)
+    text = _CONFIG_TAG.sub("", text)
     # <br> → 改行 (エスケープ済みのものはマッチしない)
     return _SPLIT_BR.sub("\n", text)
 
@@ -259,6 +263,9 @@ class VoicevoxEngine(TTSEngine):
         """
         if not text:
             return b"", []
+
+        # <config> タグを事前除去 (configだけの行が空文にならないよう)
+        text = _CONFIG_TAG.sub("", text)
 
         sentences, pause_gaps, leading_pause = _split_sentences(text)
         if not sentences:

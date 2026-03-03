@@ -39,9 +39,14 @@ _WAIT_TAG = re.compile(r"<wait=([\d.]+)\s*(ms|s)?\s*>", re.IGNORECASE)
 _SPEED_TAG = re.compile(r"<speed=([\d.]+)>", re.IGNORECASE)
 _PITCH_TAG = re.compile(r"<pitch=([+\-]?[\d.]+)>", re.IGNORECASE)
 
-# プレースホルダ: {テキスト} 内の <> をエスケープするための代替文字
+# プレースホルダ: {テキスト} 内の文字をエスケープするための代替文字
 _LT = "\x02"
 _GT = "\x03"
+# 句読点プレースホルダ ({...} 内の句読点を置換対象外にする)
+_PUNCT_PH = {
+    "。": "\x04", "．": "\x05", ".": "\x06",
+    "、": "\x07", "，": "\x10", ",": "\x11",
+}
 
 
 def _to_display(text: str) -> str:
@@ -54,7 +59,10 @@ def _to_display(text: str) -> str:
     text = _READING_PATTERN.sub(r"\1", text)
     # {テキスト} 内の <> をエスケープしてから展開 (先にやらないと中のタグが消える)
     def _escape_brace(m):
-        return m.group(1).replace("<", _LT).replace(">", _GT)
+        s = m.group(1).replace("<", _LT).replace(">", _GT)
+        for ch, ph in _PUNCT_PH.items():
+            s = s.replace(ch, ph)
+        return s
     text = _BRACE_PATTERN.sub(_escape_brace, text)
     # <wait>, <config>, <speed>, <pitch> タグを除去 (エスケープ済みのものはマッチしない)
     text = _WAIT_TAG.sub("", text)

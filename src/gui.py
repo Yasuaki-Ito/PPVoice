@@ -11,6 +11,11 @@ from tkinter import colorchooser, filedialog, font as tkfont, messagebox
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import customtkinter as ctk
+try:
+    from tkinterdnd2 import DND_FILES, TkinterDnD
+    _HAS_DND = True
+except ImportError:
+    _HAS_DND = False
 
 from pptx_reader import read_slides
 from pptx_writer import embed_audio
@@ -47,7 +52,19 @@ class LogRedirector:
         pass
 
 
-class App(ctk.CTk):
+if _HAS_DND:
+    class _AppBase(ctk.CTk, TkinterDnD.DnDWrapper):
+        def __init__(self):
+            super().__init__()
+            try:
+                self.TkdndVersion = TkinterDnD._require(self)
+            except Exception:
+                self.TkdndVersion = None
+else:
+    _AppBase = ctk.CTk
+
+
+class App(_AppBase):
     def __init__(self):
         super().__init__()
         self.title(f"PPVoice v{__version__}")
@@ -76,35 +93,21 @@ class App(ctk.CTk):
         self._update_run_btn()
 
     def _setup_dnd(self):
-        """ドラッグ&ドロップを設定する (tkdnd Tcl パッケージ)。"""
+        """ドラッグ&ドロップを設定する (tkinterdnd2)。"""
+        if not _HAS_DND or not getattr(self, "TkdndVersion", None):
+            return
         try:
-            # tkdnd パッケージの読み込みを試行
-            try:
-                self.tk.eval("package require tkdnd")
-            except Exception:
-                # tkinterdnd2 同梱の tkdnd を探す
-                import tkinterdnd2, platform
-                arch = "win-x64" if platform.machine().endswith("64") else "win-x86"
-                tkdnd_dir = os.path.join(os.path.dirname(tkinterdnd2.__file__), "tkdnd", arch)
-                if os.path.isdir(tkdnd_dir):
-                    tcl_path = tkdnd_dir.replace("\\", "/")
-                    self.tk.eval(f"lappend auto_path {{{tcl_path}}}")
-                    self.tk.eval("package require tkdnd")
-                else:
-                    raise FileNotFoundError("tkdnd not found")
-
-            self.tk.call("tkdnd::drop_target", "register", self._w, ("DND_Files",))
-            drop_cmd = self.register(self._on_file_drop)
-            self.tk.eval(f"bind {self._w} <<Drop>> {{{drop_cmd} %D}}")
+            self.drop_target_register(DND_FILES)
+            self.dnd_bind("<<Drop>>", self._on_file_drop)
         except Exception:
             pass
 
-    def _on_file_drop(self, data: str):
+    def _on_file_drop(self, event):
         """ファイルがドロップされた時の処理。"""
         try:
-            files = self.tk.splitlist(data)
+            files = self.tk.splitlist(event.data)
         except Exception:
-            files = [data]
+            files = [event.data]
         for f in files:
             f = f.strip("{}")
             if f.lower().endswith(".pptx"):
@@ -319,6 +322,17 @@ class App(ctk.CTk):
         ctk.CTkComboBox(row, values=["そのまま", "。", ".(半角)", "．(全角)", "(半角空白)", "(全角空白)"],
                         variable=self.kuten_mode_var,
                         state="readonly", width=120).pack(side="left", padx=(4, 0))
+
+        # 文字装飾 (太字・斜体・下線)
+        row = ctk.CTkFrame(sec, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=3)
+        ctk.CTkLabel(row, text="文字装飾", width=120, anchor="w").pack(side="left")
+        self.default_bold_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(row, text="太字", variable=self.default_bold_var).pack(side="left", padx=(0, 12))
+        self.default_italic_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(row, text="斜体", variable=self.default_italic_var).pack(side="left", padx=(0, 12))
+        self.default_underline_var = ctk.BooleanVar(value=False)
+        ctk.CTkCheckBox(row, text="下線", variable=self.default_underline_var).pack(side="left")
 
         # スタイル
         row = ctk.CTkFrame(sec, fg_color="transparent")
@@ -820,6 +834,12 @@ class App(ctk.CTk):
             self.kuten_mode_var.set(config["kuten"])
         if "touten" in config:
             self.touten_mode_var.set(config["touten"])
+        if "bold" in config:
+            self.default_bold_var.set(config["bold"].lower() in ("on", "true", "1"))
+        if "italic" in config:
+            self.default_italic_var.set(config["italic"].lower() in ("on", "true", "1"))
+        if "underline" in config:
+            self.default_underline_var.set(config["underline"].lower() in ("on", "true", "1"))
 
     def _set_color(self, hex_val: str, var: ctk.StringVar, btn: ctk.CTkButton):
         """色の変数とボタン表示を更新する。"""
@@ -898,6 +918,9 @@ class App(ctk.CTk):
         _add("bg_alpha", self.bg_alpha_var.get())
         _add("kuten", self.kuten_mode_var.get())
         _add("touten", self.touten_mode_var.get())
+        _add("bold", "on" if self.default_bold_var.get() else "off")
+        _add("italic", "on" if self.default_italic_var.get() else "off")
+        _add("underline", "on" if self.default_underline_var.get() else "off")
 
         return "<config " + " ".join(parts) + ">"
 
@@ -1134,6 +1157,9 @@ class App(ctk.CTk):
         sub_bg_alpha = self.bg_alpha_var.get()
         sub_kuten_mode = self.kuten_mode_var.get()
         sub_touten_mode = self.touten_mode_var.get()
+        sub_default_bold = self.default_bold_var.get()
+        sub_default_italic = self.default_italic_var.get()
+        sub_default_underline = self.default_underline_var.get()
 
         # スライド読み込み
         print(f"PPTXを読み込んでいます: {input_path}")
@@ -1212,6 +1238,9 @@ class App(ctk.CTk):
             subtitle_bg_alpha=sub_bg_alpha,
             subtitle_kuten_mode=sub_kuten_mode,
             subtitle_touten_mode=sub_touten_mode,
+            subtitle_default_bold=sub_default_bold,
+            subtitle_default_italic=sub_default_italic,
+            subtitle_default_underline=sub_default_underline,
         )
 
         self.after(0, self.progress.set, 1.0)

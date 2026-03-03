@@ -155,6 +155,11 @@ _FORMAT_TAG = re.compile(
 # voicevox.py のプレースホルダと同じ値
 _LT = "\x02"
 _GT = "\x03"
+# 句読点プレースホルダ → 元の文字 (voicevox.py の _PUNCT_PH の逆)
+_PUNCT_PH_RESTORE = {
+    "\x04": "。", "\x05": "．", "\x06": ".",
+    "\x07": "、", "\x10": "，", "\x11": ",",
+}
 
 # 句読点置換: ラベル → 実際の文字 (1文字のラベルはそのまま使用)
 _PUNCT_CHAR_MAP = {
@@ -252,6 +257,9 @@ def _add_subtitle_shapes(
     bg_alpha: int = 60000,
     kuten_mode: str = "そのまま",
     touten_mode: str = "そのまま",
+    default_bold: bool = False,
+    default_italic: bool = False,
+    default_underline: bool = False,
 ) -> tuple[list[int], list[tuple[str, int, int]]]:
     """字幕用テキストボックスをスライドに追加する。
 
@@ -266,6 +274,9 @@ def _add_subtitle_shapes(
         glow_radius_pt: ぼかしのサイズ pt (デフォルト: 11.0)
         bg_color: 背景色 (box スタイル時, デフォルト: 黒)
         bg_alpha: 背景の不透明度 (1/1000%, デフォルト: 60000 = 60%)
+        default_bold: デフォルトの太字設定 (デフォルト: True)
+        default_italic: デフォルトの斜体設定 (デフォルト: False)
+        default_underline: デフォルトの下線設定 (デフォルト: False)
 
     Returns:
         (シェイプIDリスト, 分割後のタイミングリスト)
@@ -298,6 +309,9 @@ def _add_subtitle_shapes(
                 for ch in "、,，":
                     if ch != tc:
                         t = t.replace(ch, tc)
+            # {…} 内のプレースホルダを元の文字に復元
+            for ph, ch in _PUNCT_PH_RESTORE.items():
+                t = t.replace(ph, ch)
             run.text = t
             if seg.size and (seg.size[0] in "+-"):
                 run.font.size = Pt(font_size + int(seg.size))
@@ -309,14 +323,18 @@ def _add_subtitle_shapes(
                 RGBColor(int(seg.color[0:2], 16), int(seg.color[2:4], 16), int(seg.color[4:6], 16))
                 if seg.color else font_color
             )
-            run.font.bold = True
+            run.font.bold = seg.bold or default_bold
+            run.font.italic = seg.italic or default_italic
+            run.font.underline = seg.underline or default_underline
             effective_font = seg.font or font_name
             if effective_font:
                 run.font.name = effective_font
-            if seg.italic:
-                run.font.italic = True
-            if seg.underline:
-                run.font.underline = True
+                # 東アジアフォント (a:ea) も設定 — font.name は a:latin のみ
+                rPr = run._r.get_or_add_rPr()
+                ea = rPr.find(_qn("a:ea"))
+                if ea is None:
+                    ea = etree.SubElement(rPr, _qn("a:ea"))
+                ea.set("typeface", effective_font)
             if style == "outline":
                 if use_outline:
                     _apply_text_outline(run._r, outline_color=outline_color_hex,
@@ -542,6 +560,9 @@ def embed_audio(
     subtitle_bg_alpha: int = 60,
     subtitle_kuten_mode: str = "そのまま",
     subtitle_touten_mode: str = "そのまま",
+    subtitle_default_bold: bool = False,
+    subtitle_default_italic: bool = False,
+    subtitle_default_underline: bool = False,
 ) -> None:
     """各スライドに音声を埋め込んだPPTXを生成する。
 
@@ -619,6 +640,9 @@ def embed_audio(
                 bg_alpha=subtitle_bg_alpha * 1000,
                 kuten_mode=subtitle_kuten_mode,
                 touten_mode=subtitle_touten_mode,
+                default_bold=subtitle_default_bold,
+                default_italic=subtitle_default_italic,
+                default_underline=subtitle_default_underline,
             )
             # (shape_id, appear_ms, disappear_ms) のリストを作成
             subtitle_anim_data = []

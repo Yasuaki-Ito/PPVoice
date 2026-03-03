@@ -102,8 +102,16 @@ def _apply_text_glow(run_element, glow_color: str = "000000", radius_emu: int = 
     rPr = run_element.find(_qn("a:rPr"))
     if rPr is None:
         return
-    # effectLst は solidFill の後に配置 (OOXML スキーマ順序)
-    effect_lst = etree.SubElement(rPr, _qn("a:effectLst"))
+    # effectLst は solidFill の後、latin/ea/cs の前に配置 (OOXML スキーマ順序)
+    effect_lst = etree.Element(_qn("a:effectLst"))
+    # solidFill の直後に挿入
+    solid = rPr.find(_qn("a:solidFill"))
+    if solid is not None:
+        idx = list(rPr).index(solid) + 1
+    else:
+        ln = rPr.find(_qn("a:ln"))
+        idx = list(rPr).index(ln) + 1 if ln is not None else 0
+    rPr.insert(idx, effect_lst)
     glow = etree.SubElement(effect_lst, _qn("a:glow"))
     glow.set("rad", str(radius_emu))
     srgb = etree.SubElement(glow, _qn("a:srgbClr"))
@@ -139,14 +147,21 @@ def _apply_text_outline(run_element, outline_color: str = "000000", width_emu: i
 # ---------------------------------------------------------------------------
 
 # <b>, </b>, <i>, </i>, <u>, </u>, <color=#RRGGBB>, </color>,
-# <font=名前>, </font> (大文字小文字対応)
+# <font=名前>, </font>, <size=N>, </size> (大文字小文字対応)
 _FORMAT_TAG = re.compile(
-    r"<(/?)(b|i|u|color|font)(?:=([^>]+))?>",
+    r"<(/?)(b|i|u|color|font|size)(?:=([^>]+))?>",
     re.IGNORECASE,
 )
 # voicevox.py のプレースホルダと同じ値
 _LT = "\x02"
 _GT = "\x03"
+
+# 句読点置換: ラベル → 実際の文字 (1文字のラベルはそのまま使用)
+_PUNCT_CHAR_MAP = {
+    ".(半角)": ".", "．(全角)": "．",
+    ",(半角)": ",", "，(全角)": "，",
+    "(半角空白)": " ", "(全角空白)": "\u3000",
+}
 
 
 @dataclass
@@ -158,13 +173,14 @@ class _TextSegment:
     underline: bool = False
     color: str | None = None  # hex RGB (e.g. "FF0000") or None
     font: str | None = None   # フォント名 or None (デフォルト)
+    size: str | None = None   # "+2", "-1", "24" など or None (デフォルト)
 
 
 
 def _parse_formatted_text(text: str) -> list[_TextSegment]:
     """書式タグ付きテキストを解析し、セグメントのリストを返す。
 
-    対応タグ: <b>, <i>, <u>, <color=#RRGGBB> (大文字小文字対応)
+    対応タグ: <b>, <i>, <u>, <color=#RRGGBB>, <size=N> (大文字小文字対応)
     プレースホルダ (_LT, _GT) は元の <> に復元される。
     """
     segments: list[_TextSegment] = []
@@ -173,6 +189,7 @@ def _parse_formatted_text(text: str) -> list[_TextSegment]:
     underline = False
     color: str | None = None
     font_name: str | None = None
+    size_spec: str | None = None
 
     last_end = 0
     for m in _FORMAT_TAG.finditer(text):
@@ -180,7 +197,7 @@ def _parse_formatted_text(text: str) -> list[_TextSegment]:
         if m.start() > last_end:
             plain = text[last_end:m.start()].replace(_LT, "<").replace(_GT, ">")
             if plain:
-                segments.append(_TextSegment(plain, bold, italic, underline, color, font_name))
+                segments.append(_TextSegment(plain, bold, italic, underline, color, font_name, size_spec))
 
         closing = m.group(1) == "/"
         tag_name = m.group(2).lower()
@@ -196,6 +213,8 @@ def _parse_formatted_text(text: str) -> list[_TextSegment]:
             color = tag_value[1:].upper() if tag_value and not closing else None
         elif tag_name == "font":
             font_name = tag_value if tag_value and not closing else None
+        elif tag_name == "size":
+            size_spec = tag_value if tag_value and not closing else None
 
         last_end = m.end()
 
@@ -203,7 +222,7 @@ def _parse_formatted_text(text: str) -> list[_TextSegment]:
     if last_end < len(text):
         remaining = text[last_end:].replace(_LT, "<").replace(_GT, ">")
         if remaining:
-            segments.append(_TextSegment(remaining, bold, italic, underline, color, font_name))
+            segments.append(_TextSegment(remaining, bold, italic, underline, color, font_name, size_spec))
 
     # タグなしの場合はそのまま1セグメント
     if not segments:
@@ -231,6 +250,8 @@ def _add_subtitle_shapes(
     glow_radius_pt: float = 11.0,
     bg_color: RGBColor | None = None,
     bg_alpha: int = 60000,
+    kuten_mode: str = "そのまま",
+    touten_mode: str = "そのまま",
 ) -> tuple[list[int], list[tuple[str, int, int]]]:
     """字幕用テキストボックスをスライドに追加する。
 
@@ -261,11 +282,29 @@ def _add_subtitle_shapes(
     def _fill_paragraph(p, line_text):
         """1つの段落に書式付きテキストを設定する。"""
         p.alignment = PP_ALIGN.CENTER
+        p.space_before = Pt(0)
+        p.space_after = Pt(0)
         segments = _parse_formatted_text(line_text)
         for seg in segments:
             run = p.add_run()
-            run.text = seg.text
-            run.font.size = Pt(font_size)
+            t = seg.text
+            if kuten_mode != "そのまま":
+                kc = _PUNCT_CHAR_MAP.get(kuten_mode, kuten_mode)
+                for ch in "。.．":
+                    if ch != kc:
+                        t = t.replace(ch, kc)
+            if touten_mode != "そのまま":
+                tc = _PUNCT_CHAR_MAP.get(touten_mode, touten_mode)
+                for ch in "、,，":
+                    if ch != tc:
+                        t = t.replace(ch, tc)
+            run.text = t
+            if seg.size and (seg.size[0] in "+-"):
+                run.font.size = Pt(font_size + int(seg.size))
+            elif seg.size:
+                run.font.size = Pt(int(seg.size))
+            else:
+                run.font.size = Pt(font_size)
             run.font.color.rgb = (
                 RGBColor(int(seg.color[0:2], 16), int(seg.color[2:4], 16), int(seg.color[4:6], 16))
                 if seg.color else font_color
@@ -290,7 +329,9 @@ def _add_subtitle_shapes(
     for text, _, _ in timings:
         lines = text.split("\n")
         num_lines = len(lines)
-        box_h = int(Pt(font_size).emu * 2.2 * num_lines)
+        line_emu = int(Pt(font_size).emu * 1.5)
+        pad_emu = int(Pt(font_size).emu * 0.6)
+        box_h = line_emu * num_lines + pad_emu
         box_top_adj = int(slide_h * (1 - bottom_margin_pct)) - box_h
 
         txBox = slide.shapes.add_textbox(box_left, box_top_adj, box_w, box_h)
@@ -300,6 +341,10 @@ def _add_subtitle_shapes(
         body_pr = tf._txBody.find(_qn("a:bodyPr"))
         if body_pr is not None:
             body_pr.set("anchor", "ctr")
+            body_pr.set("lIns", "0")
+            body_pr.set("tIns", "0")
+            body_pr.set("rIns", "0")
+            body_pr.set("bIns", "0")
 
         # 1行目は既存の段落を使用、2行目以降は add_paragraph()
         _fill_paragraph(tf.paragraphs[0], lines[0])
@@ -495,6 +540,8 @@ def embed_audio(
     subtitle_glow_size: float = 11.0,
     subtitle_bg_color: str = "000000",
     subtitle_bg_alpha: int = 60,
+    subtitle_kuten_mode: str = "そのまま",
+    subtitle_touten_mode: str = "そのまま",
 ) -> None:
     """各スライドに音声を埋め込んだPPTXを生成する。
 
@@ -570,6 +617,8 @@ def embed_audio(
                 glow_radius_pt=subtitle_glow_size,
                 bg_color=bgc,
                 bg_alpha=subtitle_bg_alpha * 1000,
+                kuten_mode=subtitle_kuten_mode,
+                touten_mode=subtitle_touten_mode,
             )
             # (shape_id, appear_ms, disappear_ms) のリストを作成
             subtitle_anim_data = []

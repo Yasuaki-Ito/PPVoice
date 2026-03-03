@@ -16,9 +16,12 @@ _READING_PATTERN = re.compile(r"\{([^|}]+)\|([^}]+)\}")
 _BRACE_PATTERN = re.compile(r"\{([^|}]+)\}")
 
 # 書式タグパターン: <b>, </b>, <i>, </i>, <u>, </u>, <color=#RRGGBB>, </color>,
-# <font=...>, </font>, <br>, <wait=Ns>, <config ...>
+# <font=...>, </font>, <size=N>, </size>, <br>, <wait=Ns>,
+# <speed=N>, <pitch=N>, <config ...>
 _FORMAT_TAG = re.compile(
-    r"</?(?:b|i|u|color(?:=#[0-9a-fA-F]{6})?|font(?:=[^>]+)?)>|<br\s*/?>|<wait=[\d.]+\s*(?:ms|s)?\s*>|<config\s[^>]*>",
+    r"</?(?:b|i|u|color(?:=#[0-9a-fA-F]{6})?|font(?:=[^>]+)?|size(?:=[+\-]?\d+)?"
+    r"|speed(?:=[\d.]+)?|pitch(?:=[+\-]?[\d.]+)?)>"
+    r"|<br\s*/?>|<wait=[\d.]+\s*(?:ms|s)?\s*>|<config\s[^>]*>",
     re.IGNORECASE,
 )
 
@@ -31,6 +34,10 @@ _SPLIT_BR = re.compile(r"<br\s*/?>", re.IGNORECASE)
 # <wait=Ns> パターン (数値+単位キャプチャ)
 # 対応形式: <wait=1s>, <wait=0.5s>, <wait=500ms>, <wait=2> (単位なし=秒)
 _WAIT_TAG = re.compile(r"<wait=([\d.]+)\s*(ms|s)?\s*>", re.IGNORECASE)
+
+# <speed=N> / <pitch=N> パターン (音声パラメータ)
+_SPEED_TAG = re.compile(r"<speed=([\d.]+)>", re.IGNORECASE)
+_PITCH_TAG = re.compile(r"<pitch=([+\-]?[\d.]+)>", re.IGNORECASE)
 
 # プレースホルダ: {テキスト} 内の <> をエスケープするための代替文字
 _LT = "\x02"
@@ -49,9 +56,11 @@ def _to_display(text: str) -> str:
     def _escape_brace(m):
         return m.group(1).replace("<", _LT).replace(">", _GT)
     text = _BRACE_PATTERN.sub(_escape_brace, text)
-    # <wait>, <config> タグを除去 (エスケープ済みのものはマッチしない)
+    # <wait>, <config>, <speed>, <pitch> タグを除去 (エスケープ済みのものはマッチしない)
     text = _WAIT_TAG.sub("", text)
     text = _CONFIG_TAG.sub("", text)
+    text = _SPEED_TAG.sub("", text)
+    text = _PITCH_TAG.sub("", text)
     # <br> → 改行 (エスケープ済みのものはマッチしない)
     return _SPLIT_BR.sub("\n", text)
 
@@ -203,19 +212,25 @@ class VoicevoxEngine(TTSEngine):
     デフォルトで http://localhost:50021 に接続する。
     """
 
-    def __init__(self, speaker_id: int = 1, base_url: str = "http://localhost:50021", pause_sec: float = 0.5):
+    def __init__(self, speaker_id: int = 1, base_url: str = "http://localhost:50021",
+                 pause_sec: float = 0.5, speed_scale: float = 1.0, pitch_scale: float = 0.0):
         self.speaker_id = speaker_id
         self.base_url = base_url.rstrip("/")
         self.pause_sec = pause_sec
+        self.speed_scale = speed_scale
+        self.pitch_scale = pitch_scale
 
-    def _audio_query(self, text: str) -> dict:
+    def _audio_query(self, text: str, speed: float | None = None, pitch: float | None = None) -> dict:
         """テキストから音声クエリを取得する。"""
         resp = requests.post(
             f"{self.base_url}/audio_query",
             params={"text": text, "speaker": self.speaker_id},
         )
         resp.raise_for_status()
-        return resp.json()
+        query = resp.json()
+        query["speedScale"] = speed if speed is not None else self.speed_scale
+        query["pitchScale"] = pitch if pitch is not None else self.pitch_scale
+        return query
 
     def _synthesize_chunk(self, text: str) -> bytes:
         """1文のテキストからWAV音声を生成する。"""
@@ -277,11 +292,20 @@ class VoicevoxEngine(TTSEngine):
         display_sentences = [_to_display(s) for s in sentences]
         readings = [_to_reading(s) for s in sentences]
 
+        # 各文の <speed>/<pitch> タグを抽出 (最後にマッチした値を使用)
+        speed_per_sent: list[float | None] = []
+        pitch_per_sent: list[float | None] = []
+        for s in sentences:
+            sm = list(_SPEED_TAG.finditer(s))
+            speed_per_sent.append(float(sm[-1].group(1)) if sm else None)
+            pm = list(_PITCH_TAG.finditer(s))
+            pitch_per_sent.append(float(pm[-1].group(1)) if pm else None)
+
         # --- audio_query を並列実行 ---
         queries = [None] * len(readings)
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {
-                pool.submit(self._audio_query, r): i
+                pool.submit(self._audio_query, r, speed_per_sent[i], pitch_per_sent[i]): i
                 for i, r in enumerate(readings)
             }
             done_count = 0

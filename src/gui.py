@@ -68,10 +68,48 @@ class App(ctk.CTk):
         self._cancel_event = threading.Event()
         self._pending_speaker: str | None = None
         self._pending_style: str | None = None
+        self._test_stop = False
 
         self._build_ui()
+        self._setup_dnd()
         self.input_var.trace_add("write", lambda *_: self._update_run_btn())
         self._update_run_btn()
+
+    def _setup_dnd(self):
+        """ドラッグ&ドロップを設定する (tkdnd Tcl パッケージ)。"""
+        try:
+            # tkdnd パッケージの読み込みを試行
+            try:
+                self.tk.eval("package require tkdnd")
+            except Exception:
+                # tkinterdnd2 同梱の tkdnd を探す
+                import tkinterdnd2, platform
+                arch = "win-x64" if platform.machine().endswith("64") else "win-x86"
+                tkdnd_dir = os.path.join(os.path.dirname(tkinterdnd2.__file__), "tkdnd", arch)
+                if os.path.isdir(tkdnd_dir):
+                    tcl_path = tkdnd_dir.replace("\\", "/")
+                    self.tk.eval(f"lappend auto_path {{{tcl_path}}}")
+                    self.tk.eval("package require tkdnd")
+                else:
+                    raise FileNotFoundError("tkdnd not found")
+
+            self.tk.call("tkdnd::drop_target", "register", self._w, ("DND_Files",))
+            drop_cmd = self.register(self._on_file_drop)
+            self.tk.eval(f"bind {self._w} <<Drop>> {{{drop_cmd} %D}}")
+        except Exception:
+            pass
+
+    def _on_file_drop(self, data: str):
+        """ファイルがドロップされた時の処理。"""
+        try:
+            files = self.tk.splitlist(data)
+        except Exception:
+            files = [data]
+        for f in files:
+            f = f.strip("{}")
+            if f.lower().endswith(".pptx"):
+                self._set_input_file(f)
+                break
 
     # ------------------------------------------------------------------
     # UI構築
@@ -191,19 +229,43 @@ class App(ctk.CTk):
         )
         self.style_speaker_menu.pack(side="left", fill="x", expand=True, padx=(4, 0))
 
+        # 読み上げ速度
+        row = ctk.CTkFrame(sec, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=3)
+        ctk.CTkLabel(row, text="速度", width=120, anchor="w").pack(side="left")
+        self.speed_var = ctk.DoubleVar(value=1.0)
+        ctk.CTkSlider(row, from_=0.5, to=2.0, number_of_steps=30, variable=self.speed_var).pack(
+            side="left", fill="x", expand=True, padx=(4, 8)
+        )
+        self.speed_label = ctk.CTkLabel(row, text="1.0", width=40)
+        self.speed_label.pack(side="left")
+        self.speed_var.trace_add("write", lambda *_: self.speed_label.configure(text=f"{self.speed_var.get():.1f}"))
+
+        # ピッチ
+        row = ctk.CTkFrame(sec, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=3)
+        ctk.CTkLabel(row, text="ピッチ", width=120, anchor="w").pack(side="left")
+        self.pitch_var = ctk.DoubleVar(value=0.0)
+        ctk.CTkSlider(row, from_=-0.15, to=0.15, number_of_steps=30, variable=self.pitch_var).pack(
+            side="left", fill="x", expand=True, padx=(4, 8)
+        )
+        self.pitch_label = ctk.CTkLabel(row, text="0.00", width=40)
+        self.pitch_label.pack(side="left")
+        self.pitch_var.trace_add("write", lambda *_: self.pitch_label.configure(text=f"{self.pitch_var.get():.2f}"))
+
         # テスト再生
         row = ctk.CTkFrame(sec, fg_color="transparent")
         row.pack(fill="x", padx=14, pady=3)
-        ctk.CTkLabel(row, text="テスト", width=120, anchor="w").pack(side="left")
-        self.test_text_var = ctk.StringVar(value="音声のテストです。")
-        ctk.CTkEntry(
-            row, textvariable=self.test_text_var,
-        ).pack(side="left", fill="x", expand=True, padx=(4, 6))
+        ctk.CTkLabel(row, text="テスト", width=120, anchor="nw").pack(side="left", anchor="n")
+        self.test_textbox = ctk.CTkTextbox(row, height=60, wrap="word")
+        self.test_textbox.insert("1.0", "音声のテストです。")
+        self.test_textbox.pack(side="left", fill="x", expand=True, padx=(4, 6))
+        self.test_textbox._textbox.configure(height=3)
         self.test_play_btn = ctk.CTkButton(
             row, text="▶ 再生", width=80, command=self._on_test_play,
             state="disabled",
         )
-        self.test_play_btn.pack(side="left")
+        self.test_play_btn.pack(side="left", anchor="n")
 
         # VOICEVOX 利用規約リンク
         row = ctk.CTkFrame(sec, fg_color="transparent")
@@ -220,31 +282,15 @@ class App(ctk.CTk):
         note.pack(side="left", padx=(4, 0))
         note.bind("<Button-1>", lambda e: __import__("webbrowser").open("https://voicevox.hiroshiba.jp/"))
 
-        # 文間の間
-        row = ctk.CTkFrame(sec, fg_color="transparent")
-        row.pack(fill="x", padx=14, pady=3)
-        ctk.CTkLabel(row, text="文間の間 (秒)", width=120, anchor="w").pack(side="left")
-        self.pause_var = ctk.DoubleVar(value=0.5)
-        ctk.CTkSlider(row, from_=0.0, to=3.0, number_of_steps=30, variable=self.pause_var).pack(
-            side="left", fill="x", expand=True, padx=(4, 8)
-        )
-        self.pause_label = ctk.CTkLabel(row, text="0.5", width=40)
-        self.pause_label.pack(side="left")
-        self.pause_var.trace_add("write", lambda *_: self.pause_label.configure(text=f"{self.pause_var.get():.1f}"))
-
-        # 終了後の間
+        # 文の区切り・末尾の余白
         row = ctk.CTkFrame(sec, fg_color="transparent")
         row.pack(fill="x", padx=14, pady=(3, 12))
-        ctk.CTkLabel(row, text="終了後の間 (秒)", width=120, anchor="w").pack(side="left")
+        ctk.CTkLabel(row, text="文の区切り (秒)", width=120, anchor="w").pack(side="left")
+        self.pause_var = ctk.DoubleVar(value=0.5)
+        ctk.CTkEntry(row, textvariable=self.pause_var, width=50).pack(side="left", padx=(4, 16))
+        ctk.CTkLabel(row, text="末尾の余白 (秒)", width=120, anchor="w").pack(side="left")
         self.end_pause_var = ctk.DoubleVar(value=2.0)
-        ctk.CTkSlider(row, from_=0.0, to=10.0, number_of_steps=100, variable=self.end_pause_var).pack(
-            side="left", fill="x", expand=True, padx=(4, 8)
-        )
-        self.end_pause_label = ctk.CTkLabel(row, text="2.0", width=40)
-        self.end_pause_label.pack(side="left")
-        self.end_pause_var.trace_add(
-            "write", lambda *_: self.end_pause_label.configure(text=f"{self.end_pause_var.get():.1f}")
-        )
+        ctk.CTkEntry(row, textvariable=self.end_pause_var, width=50).pack(side="left", padx=(4, 0))
 
     # --- 字幕設定 ---
     def _build_subtitle_section(self, parent):
@@ -258,6 +304,21 @@ class App(ctk.CTk):
         row.pack(fill="x", padx=14, pady=3)
         self.subtitle_var = ctk.BooleanVar(value=True)
         ctk.CTkCheckBox(row, text="字幕を表示する", variable=self.subtitle_var).pack(side="left")
+
+        # 句読点の置換
+        row = ctk.CTkFrame(sec, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=3)
+        ctk.CTkLabel(row, text="置換", width=120, anchor="w").pack(side="left")
+        ctk.CTkLabel(row, text="読点", anchor="w").pack(side="left")
+        self.touten_mode_var = ctk.StringVar(value="そのまま")
+        ctk.CTkComboBox(row, values=["そのまま", "、", ",(半角)", "，(全角)", "(半角空白)", "(全角空白)"],
+                        variable=self.touten_mode_var,
+                        state="readonly", width=120).pack(side="left", padx=(4, 16))
+        ctk.CTkLabel(row, text="句点", anchor="w").pack(side="left")
+        self.kuten_mode_var = ctk.StringVar(value="そのまま")
+        ctk.CTkComboBox(row, values=["そのまま", "。", ".(半角)", "．(全角)", "(半角空白)", "(全角空白)"],
+                        variable=self.kuten_mode_var,
+                        state="readonly", width=120).pack(side="left", padx=(4, 0))
 
         # スタイル
         row = ctk.CTkFrame(sec, fg_color="transparent")
@@ -419,20 +480,25 @@ class App(ctk.CTk):
     def _browse_input(self):
         path = filedialog.askopenfilename(filetypes=[("PowerPoint", "*.pptx")])
         if path:
-            self.input_var.set(path)
-            if not self.output_var.get():
-                base = os.path.splitext(path)[0]
-                self.output_var.set(base + "_speech.pptx")
-            # <config> タグの自動読み込み
-            try:
-                slides = read_slides(path)
-                notes = [s.notes_text for s in slides if s.notes_text]
-                config = self._parse_config_tags(notes)
-                if config:
-                    self._apply_config(config)
-                    self._log(f"設定タグを読み込みました。\n")
-            except Exception:
-                pass
+            self._set_input_file(path)
+
+    def _set_input_file(self, path: str):
+        """入力ファイルを設定し、<config> タグを自動読み込みする。"""
+        self.input_var.set(path)
+        if not self.output_var.get():
+            base = os.path.splitext(path)[0]
+            self.output_var.set(base + "_speech.pptx")
+        # <config> タグの自動読み込み
+        try:
+            slides = read_slides(path)
+            notes = [s.notes_text for s in slides if s.notes_text]
+            config = self._parse_config_tags(notes)
+            if config:
+                self._apply_config(config)
+                details = "\n".join(f"  {k}={v}" for k, v in config.items())
+                self._log(f"設定タグを読み込みました:\n{details}\n")
+        except Exception:
+            pass
 
     def _on_slide_range_changed(self):
         if self.slide_range_var.get() == "select":
@@ -605,11 +671,12 @@ class App(ctk.CTk):
     def _on_test_play(self):
         btn_text = self.test_play_btn.cget("text")
         if btn_text == "■ 停止":
+            self._test_stop = True
             winsound.PlaySound(None, winsound.SND_PURGE)
             self._test_play_reset()
             return
 
-        text = self.test_text_var.get().strip()
+        text = self.test_textbox.get("1.0", "end-1c").strip()
         if not text:
             return
         if not self._speaker_map:
@@ -619,26 +686,61 @@ class App(ctk.CTk):
         style_label = self.style_speaker_menu.get()
         speaker_id = self._speaker_map.get(style_label, 1)
         url = self.url_var.get().strip()
+        speed = self.speed_var.get()
+        pitch = self.pitch_var.get()
 
         self.test_play_btn.configure(text="合成中...", state="disabled")
         thread = threading.Thread(
             target=self._test_play_worker,
-            args=(text, speaker_id, url),
+            args=(text, speaker_id, url, speed, pitch),
             daemon=True,
         )
         thread.start()
 
-    def _test_play_worker(self, text, speaker_id, url):
+    def _test_play_worker(self, text, speaker_id, url, speed, pitch):
         try:
-            engine = VoicevoxEngine(speaker_id=speaker_id, base_url=url)
-            wav = engine.synthesize(text)
+            engine = VoicevoxEngine(speaker_id=speaker_id, base_url=url,
+                                    speed_scale=speed, pitch_scale=pitch)
+            wav, timings = engine.synthesize_with_timings(text)
             self.after(0, lambda: self.test_play_btn.configure(text="■ 停止", state="normal"))
+
+            # 字幕を再生タイミングに合わせてログに表示
+            self._test_stop = False
+            if timings:
+                self.after(0, lambda: self._log("--- 字幕プレビュー ---\n"))
+                sub_thread = threading.Thread(
+                    target=self._test_subtitle_worker,
+                    args=(timings,), daemon=True,
+                )
+                sub_thread.start()
+
             # SND_MEMORY は同期再生 (再生完了 or SND_PURGE で停止するまでブロック)
             winsound.PlaySound(wav, winsound.SND_MEMORY)
+            self._test_stop = True
         except Exception as e:
+            self._test_stop = True
             self.after(0, lambda: self._log(f"テスト再生エラー: {e}\n"))
         finally:
             self.after(0, self._test_play_reset)
+
+    _STRIP_TAGS = re.compile(r"</?[a-zA-Z][^>]*>")
+
+    def _test_subtitle_worker(self, timings):
+        """再生タイミングに合わせて字幕テキストをログに表示する。"""
+        import time
+        t0 = time.perf_counter()
+        for disp_text, start_ms, _dur_ms in timings:
+            if self._test_stop:
+                return
+            # 開始タイミングまで待つ
+            wait = start_ms / 1000.0 - (time.perf_counter() - t0)
+            if wait > 0:
+                time.sleep(wait)
+            if self._test_stop:
+                return
+            clean = self._STRIP_TAGS.sub("", disp_text)
+            clean = clean.replace("\x02", "<").replace("\x03", ">")
+            self.after(0, lambda t=clean: self._log(f"  {t}\n"))
 
     def _test_play_reset(self):
         state = "normal" if self._speaker_map else "disabled"
@@ -676,6 +778,10 @@ class App(ctk.CTk):
         # --- 音声設定 ---
         if "pause" in config:
             self.pause_var.set(float(config["pause"]))
+        if "speed" in config:
+            self.speed_var.set(float(config["speed"]))
+        if "pitch" in config:
+            self.pitch_var.set(float(config["pitch"]))
         if "end_pause" in config:
             self.end_pause_var.set(float(config["end_pause"]))
 
@@ -710,6 +816,10 @@ class App(ctk.CTk):
             self._set_color(config["bg_color"], self.bg_color_var, self.bg_color_btn)
         if "bg_alpha" in config:
             self.bg_alpha_var.set(int(config["bg_alpha"]))
+        if "kuten" in config:
+            self.kuten_mode_var.set(config["kuten"])
+        if "touten" in config:
+            self.touten_mode_var.set(config["touten"])
 
     def _set_color(self, hex_val: str, var: ctk.StringVar, btn: ctk.CTkButton):
         """色の変数とボタン表示を更新する。"""
@@ -766,6 +876,8 @@ class App(ctk.CTk):
 
         # 音声
         _add("pause", f"{self.pause_var.get():.1f}")
+        _add("speed", f"{self.speed_var.get():.1f}")
+        _add("pitch", f"{self.pitch_var.get():.2f}")
         _add("end_pause", f"{self.end_pause_var.get():.1f}")
 
         # 字幕
@@ -784,6 +896,8 @@ class App(ctk.CTk):
         _add("glow_size", f"{self.glow_size_var.get():.1f}")
         _add("bg_color", self.bg_color_var.get())
         _add("bg_alpha", self.bg_alpha_var.get())
+        _add("kuten", self.kuten_mode_var.get())
+        _add("touten", self.touten_mode_var.get())
 
         return "<config " + " ".join(parts) + ">"
 
@@ -1000,6 +1114,8 @@ class App(ctk.CTk):
 
         url = self.url_var.get().strip()
         pause_sec = self.pause_var.get()
+        speed_scale = self.speed_var.get()
+        pitch_scale = self.pitch_var.get()
         end_pause_sec = self.end_pause_var.get()
         use_subtitle = self.subtitle_var.get()
         sub_style = self.style_var.get()
@@ -1016,6 +1132,8 @@ class App(ctk.CTk):
         sub_glow_size = self.glow_size_var.get()
         sub_bg_color = self.bg_color_var.get().lstrip("#")
         sub_bg_alpha = self.bg_alpha_var.get()
+        sub_kuten_mode = self.kuten_mode_var.get()
+        sub_touten_mode = self.touten_mode_var.get()
 
         # スライド読み込み
         print(f"PPTXを読み込んでいます: {input_path}")
@@ -1038,7 +1156,8 @@ class App(ctk.CTk):
         # 音声合成
         need_timings = use_subtitle
         print(f"\n音声を合成しています (speaker={speaker_id}, pause={pause_sec}s)...")
-        engine = VoicevoxEngine(speaker_id=speaker_id, base_url=url, pause_sec=pause_sec)
+        engine = VoicevoxEngine(speaker_id=speaker_id, base_url=url, pause_sec=pause_sec,
+                                speed_scale=speed_scale, pitch_scale=pitch_scale)
 
         slide_audio = []
         slide_timings = {}
@@ -1091,6 +1210,8 @@ class App(ctk.CTk):
             subtitle_glow_size=sub_glow_size,
             subtitle_bg_color=sub_bg_color,
             subtitle_bg_alpha=sub_bg_alpha,
+            subtitle_kuten_mode=sub_kuten_mode,
+            subtitle_touten_mode=sub_touten_mode,
         )
 
         self.after(0, self.progress.set, 1.0)

@@ -1,5 +1,6 @@
 """PPTXスライドに音声を埋め込む (純粋Python / OOXML操作)"""
 
+import copy
 import io
 import os
 import re
@@ -393,10 +394,67 @@ def _add_subtitle_shapes(
 # タイミングXML生成
 # ---------------------------------------------------------------------------
 
+def _extract_click_groups(sld) -> tuple[list[etree._Element], etree._Element | None]:
+    """既存の mainSeq からクリックグループ (<p:par>) と bldLst を抽出する。
+
+    Returns:
+        (click_groups, bld_lst)
+    """
+    timing = sld.find(_qn("p:timing"))
+    if timing is None:
+        return [], None
+
+    bld_lst = timing.find(_qn("p:bldLst"))
+
+    # mainSeq を探す
+    for seq in timing.iter(_qn("p:seq")):
+        ctn = seq.find(_qn("p:cTn"))
+        if ctn is not None and ctn.get("nodeType") == "mainSeq":
+            child_list = ctn.find(_qn("p:childTnLst"))
+            if child_list is not None:
+                # 各 <p:par> をコピーして返す (元のツリーから切り離す)
+                return [copy.deepcopy(par) for par in child_list.findall(_qn("p:par"))], \
+                       copy.deepcopy(bld_lst) if bld_lst is not None else None
+
+    return [], copy.deepcopy(bld_lst) if bld_lst is not None else None
+
+
+def _next_positions_to_ms(
+    next_positions: list[tuple[int, float]],
+    timings: list[tuple[str, int, int]],
+) -> list[int]:
+    """next_positions と音声タイミングから発火ミリ秒リストを計算する。
+
+    Args:
+        next_positions: [(sentence_index, char_ratio), ...]
+        timings: [(text, start_ms, dur_ms), ...]
+
+    Returns:
+        [ms, ...] — 各 <next> の発火ミリ秒
+    """
+    result = []
+    for sent_idx, ratio in next_positions:
+        if sent_idx < 0:
+            result.append(0)
+        elif sent_idx < len(timings):
+            _, start_ms, dur_ms = timings[sent_idx]
+            result.append(start_ms + int(dur_ms * ratio))
+        elif timings:
+            # 末尾を超えた場合は最後の文の終了位置
+            _, start_ms, dur_ms = timings[-1]
+            result.append(start_ms + dur_ms)
+        else:
+            result.append(0)
+    return result
+
+
 def _make_timing_xml(
     audio_shape_id: int,
     duration_ms: int,
     subtitle_data: list[tuple[int, int, int]] | None = None,
+    click_groups: list[etree._Element] | None = None,
+    click_ms_list: list[int | None] | None = None,
+    bld_lst: etree._Element | None = None,
 ) -> etree._Element:
     """スライド表示時に音声を自動再生するタイミングXMLを生成。
 
@@ -404,6 +462,9 @@ def _make_timing_xml(
         audio_shape_id: 音声シェイプのID
         duration_ms: 音声の長さ (ms)
         subtitle_data: [(shape_id, appear_ms, disappear_ms), ...] 字幕アニメ情報
+        click_groups: 既存アニメーションのクリックグループ要素リスト
+        click_ms_list: 各クリックグループの発火ミリ秒
+        bld_lst: 既存の <p:bldLst> 要素
     """
     P = _NS["p"]
 
@@ -510,7 +571,78 @@ def _make_timing_xml(
         '</p:par></p:tnLst>'
         '</p:timing>'
     )
-    return etree.fromstring(xml.encode("utf-8"))
+    timing_el = etree.fromstring(xml.encode("utf-8"))
+
+    # --- クリックグループの統合 ---
+    # タイミング指定ありのグループは内部エフェクトを展開して
+    # 音声+字幕と同じステップに統合し、並行してアニメーションを発火させる。
+    # クリック待ち (None) のグループは mainSeq の別ステップとして追加。
+    if click_groups and click_ms_list:
+        main_seq_ctn = timing_el.find(f".//{_qn('p:cTn')}[@nodeType='mainSeq']")
+        main_child = main_seq_ctn.find(_qn("p:childTnLst"))
+
+        # 音声+字幕ステップ (最初の <p:par>) の内部 childTnLst を取得
+        first_step = main_child.find(_qn("p:par"))
+        first_step_ctn = first_step.find(_qn("p:cTn"))
+        first_step_children = first_step_ctn.find(_qn("p:childTnLst"))
+
+        for i, group in enumerate(click_groups):
+            if i >= len(click_ms_list):
+                break
+            ms = click_ms_list[i]
+            if ms is not None:
+                # タイミング指定 → 内部エフェクトを展開して統合
+                group_ctn = group.find(_qn("p:cTn"))
+                if group_ctn is not None:
+                    group_children = group_ctn.find(_qn("p:childTnLst"))
+                    if group_children is not None:
+                        for effect in list(group_children):
+                            # 各エフェクトの delay を調整 (グループ開始ms を加算)
+                            eff_ctn = effect.find(_qn("p:cTn"))
+                            if eff_ctn is not None:
+                                st_cond = eff_ctn.find(_qn("p:stCondLst"))
+                                if st_cond is not None:
+                                    for cond in st_cond.findall(_qn("p:cond")):
+                                        # イベント参照がない単純 delay のみ調整
+                                        if cond.get("evt") is None and len(cond) == 0:
+                                            d = cond.get("delay", "0")
+                                            if d != "indefinite":
+                                                cond.set("delay", str(ms + int(d)))
+                            first_step_children.append(effect)
+            else:
+                # クリック待ち → mainSeq に別ステップとして追加
+                main_child.append(group)
+
+        # コンテナの dur を更新 (アニメーション発火時刻を包含)
+        timed = [ms for ms in click_ms_list if ms is not None]
+        if timed:
+            needed_dur = max(timed) + 5000
+            current_dur = int(first_step_ctn.get("dur", str(duration_ms)))
+            if needed_dur > current_dur:
+                first_step_ctn.set("dur", str(needed_dur))
+
+    # --- 全 id 属性を再採番 (参照も更新) ---
+    id_map: dict[str, str] = {}
+    id_counter = 1
+    for el in timing_el.iter():
+        if "id" in el.attrib:
+            old_id = el.get("id")
+            id_map[old_id] = str(id_counter)
+            el.set("id", str(id_counter))
+            id_counter += 1
+    # <p:tn val="X"> / <p:rtn val="X"> の参照先を更新
+    for el in timing_el.iter():
+        local = etree.QName(el).localname
+        if local in ("tn", "rtn"):
+            val = el.get("val")
+            if val in id_map:
+                el.set("val", id_map[val])
+
+    # --- bldLst を追加 ---
+    if bld_lst is not None:
+        timing_el.append(bld_lst)
+
+    return timing_el
 
 
 # ---------------------------------------------------------------------------
@@ -563,6 +695,8 @@ def embed_audio(
     subtitle_default_bold: bool = False,
     subtitle_default_italic: bool = False,
     subtitle_default_underline: bool = False,
+    slide_next_positions: dict[int, list[tuple[int, float]]] | None = None,
+    auto_next_interval_ms: int = 5000,
 ) -> None:
     """各スライドに音声を埋め込んだPPTXを生成する。
 
@@ -572,19 +706,8 @@ def embed_audio(
         output_path: 出力PPTXファイルパス
         end_pause_ms: 音声終了後、次スライドに進むまでの待機時間(ms)
         slide_timings: {スライドインデックス: [(文, 開始ms, 長さms), ...]} 字幕タイミング
-        subtitle_font_size: 字幕フォントサイズ (pt)
-        subtitle_font_name: 字幕フォント名 (空文字でデフォルト)
-        subtitle_bottom_pct: 字幕の下マージン (スライド高さに対する割合)
-        subtitle_style: "box" (半透明背景) または "outline" (縁取り)
-        subtitle_font_color: 字幕テキストの色 hex RGB (デフォルト: "FFFFFF")
-        subtitle_use_outline: 輪郭を付ける (style="outline" 時, デフォルト: True)
-        subtitle_outline_color: 輪郭の色 hex RGB (デフォルト: "000000")
-        subtitle_outline_width: 輪郭の太さ pt (デフォルト: 0.75)
-        subtitle_use_glow: ぼかしを付ける (style="outline" 時, デフォルト: False)
-        subtitle_glow_color: ぼかしの色 hex RGB (デフォルト: "000000")
-        subtitle_glow_size: ぼかしのサイズ pt (デフォルト: 11.0)
-        subtitle_bg_color: 背景色 hex RGB (デフォルト: "000000")
-        subtitle_bg_alpha: 背景の不透明度 % (0-100, デフォルト: 60)
+        slide_next_positions: {スライドインデックス: [(sent_idx, ratio), ...]}
+        auto_next_interval_ms: 余りクリックグループの自動発火間隔 (ms)
     """
     prs = Presentation(source_path)
 
@@ -657,6 +780,10 @@ def embed_audio(
         # タイミングXML (音声 + 字幕アニメーション)
         duration_ms = get_wav_duration_ms(wav_bytes)
 
+        # <next> タグがある場合、既存アニメーションを退避
+        next_positions = (slide_next_positions or {}).get(slide_idx, [])
+        click_groups, bld_lst = _extract_click_groups(sld) if next_positions else ([], None)
+
         # 既存の transition / timing を除去
         old_transition = sld.find(_qn("p:transition"))
         if old_transition is not None:
@@ -664,6 +791,32 @@ def embed_audio(
         old_timing = sld.find(_qn("p:timing"))
         if old_timing is not None:
             sld.remove(old_timing)
+
+        # クリックグループの発火ミリ秒を計算
+        # click_ms_list の値: 正の整数=自動発火ms, None=クリック待ち(indefinite)
+        click_ms_list: list[int | None] = []
+        if click_groups:
+            if next_positions and timings:
+                click_ms_list = _next_positions_to_ms(next_positions, timings)
+            # 余りクリックグループの処理
+            if len(click_ms_list) < len(click_groups):
+                if auto_next_interval_ms > 0:
+                    # 自動発火
+                    last_next_ms = click_ms_list[-1] if click_ms_list else 0
+                    base_ms = max(duration_ms, last_next_ms)
+                    for j in range(len(click_ms_list), len(click_groups)):
+                        surplus_idx = j - len(click_ms_list)
+                        click_ms_list.append(base_ms + auto_next_interval_ms * (surplus_idx + 1))
+                else:
+                    # クリック待ちのまま残す (None = indefinite)
+                    for _ in range(len(click_ms_list), len(click_groups)):
+                        click_ms_list.append(None)
+
+        # 最終的なスライド遷移タイミング（アニメーション考慮）
+        last_event_ms = duration_ms
+        timed_ms = [ms for ms in click_ms_list if ms is not None]
+        if timed_ms:
+            last_event_ms = max(last_event_ms, max(timed_ms))
 
         # OOXML スキーマ順序: cSld, clrMapOvr, transition, timing, extLst/MC
         # transition と timing を正しい位置に挿入する
@@ -675,10 +828,15 @@ def embed_audio(
                 break
 
         transition = etree.Element(_qn("p:transition"))
-        transition.set("advTm", str(duration_ms + end_pause_ms))
+        transition.set("advTm", str(last_event_ms + end_pause_ms))
         sld.insert(insert_idx, transition)
 
-        timing_el = _make_timing_xml(audio_shape_id, duration_ms, subtitle_anim_data)
+        timing_el = _make_timing_xml(
+            audio_shape_id, duration_ms, subtitle_anim_data,
+            click_groups=click_groups if click_groups else None,
+            click_ms_list=click_ms_list if click_ms_list else None,
+            bld_lst=bld_lst,
+        )
         sld.insert(insert_idx + 1, timing_el)
 
     _try_close_powerpoint_file(output_path)

@@ -21,7 +21,7 @@ _BRACE_PATTERN = re.compile(r"\{([^|}]+)\}")
 _FORMAT_TAG = re.compile(
     r"</?(?:b|i|u|color(?:=#[0-9a-fA-F]{6})?|font(?:=[^>]+)?|size(?:=[+\-]?\d+)?"
     r"|speed(?:=[\d.]+)?|pitch(?:=[+\-]?[\d.]+)?)>"
-    r"|<br\s*/?>|<wait=[\d.]+\s*(?:ms|s)?\s*>|<config\s[^>]*>",
+    r"|<br\s*/?>|<wait=[\d.]+\s*(?:ms|s)?\s*>|<config\s[^>]*>|<next\s*/?>",
     re.IGNORECASE,
 )
 
@@ -38,6 +38,9 @@ _WAIT_TAG = re.compile(r"<wait=([\d.]+)\s*(ms|s)?\s*>", re.IGNORECASE)
 # <speed=N> / <pitch=N> パターン (音声パラメータ)
 _SPEED_TAG = re.compile(r"<speed=([\d.]+)>", re.IGNORECASE)
 _PITCH_TAG = re.compile(r"<pitch=([+\-]?[\d.]+)>", re.IGNORECASE)
+
+# <next> パターン (アニメーション発火)
+_NEXT_TAG = re.compile(r"<next\s*/?>", re.IGNORECASE)
 
 # プレースホルダ: {テキスト} 内の文字をエスケープするための代替文字
 _LT = "\x02"
@@ -69,6 +72,7 @@ def _to_display(text: str) -> str:
     text = _CONFIG_TAG.sub("", text)
     text = _SPEED_TAG.sub("", text)
     text = _PITCH_TAG.sub("", text)
+    text = _NEXT_TAG.sub("", text)
     # <br> → 改行 (エスケープ済みのものはマッチしない)
     return _SPLIT_BR.sub("\n", text)
 
@@ -83,18 +87,21 @@ def _to_reading(text: str) -> str:
     return _FORMAT_TAG.sub("", text)
 
 
-def _split_sentences(text: str) -> tuple[list[str], list[float | None], float]:
+def _split_sentences(text: str) -> tuple[list[str], list[float | None], float, list[tuple[int, float]]]:
     """テキストを改行と <wait=Ns> で分割する。
 
     <br> は分割せず保持する（字幕でテキストボックス内改行になる）。
     {...} ブロック内の改行で分割しないよう保護する。
+    <next> の位置を記録する（文の分割はしない）。
 
     Returns:
-        (sentences, pauses, leading_pause)
+        (sentences, pauses, leading_pause, next_positions)
         - sentences: 分割された文のリスト
         - pauses: 各文の後の無音秒数 (len = len(sentences) - 1)
           None はデフォルト pause_sec を使用、float は指定秒数
         - leading_pause: 最初の文の前の無音秒数 (0.0 = なし)
+        - next_positions: [(sentence_index, char_ratio), ...]
+          sentence_index=-1 は先頭 <next> (ms=0)
     """
     # {...|...} と {...} をプレースホルダに置換して分割から保護
     placeholders: list[str] = []
@@ -106,11 +113,18 @@ def _split_sentences(text: str) -> tuple[list[str], list[float | None], float]:
     protected = _READING_PATTERN.sub(_protect, text)
     protected = _BRACE_PATTERN.sub(_protect, protected)
 
+    # <next> を抽出してプレースホルダに置換 (位置を記録するため)
+    _NEXT_PH = "\x12"
+    protected = _NEXT_TAG.sub(_NEXT_PH, protected)
+
     # 改行で分割 → 各行を <wait=Ns> でさらに分割
     sentences: list[str] = []
     pauses: list[float | None] = []
     pending_wait: float | None = None  # 次の文との間に入れるwait
     leading_pause: float = 0.0
+    # <next> の位置を文ごとに記録
+    next_positions: list[tuple[int, float]] = []
+    pending_next: bool = False  # 文の境界に <next> がある
 
     lines = protected.split("\n")
     for li, line in enumerate(lines):
@@ -125,13 +139,44 @@ def _split_sentences(text: str) -> tuple[list[str], list[float | None], float]:
             if pi % 3 == 0:
                 # テキスト部分
                 chunk = parts[pi].strip()
-                if chunk:
+                if not chunk:
+                    pi += 1
+                    continue
+                # <next> プレースホルダが含まれるか確認
+                has_next = _NEXT_PH in chunk
+                # <next> を除去してテキストを取得
+                clean = chunk.replace(_NEXT_PH, "")
+                clean = clean.strip()
+                if clean:
                     if sentences:
                         pauses.append(pending_wait)
                     elif pending_wait is not None:
                         leading_pause += pending_wait
                     pending_wait = None
-                    sentences.append(chunk)
+                    # pending_next があれば、この文の先頭に <next>
+                    if pending_next:
+                        if sentences:
+                            # 前の文の末尾
+                            next_positions.append((len(sentences) - 1, 1.0))
+                        else:
+                            next_positions.append((-1, 0.0))
+                        pending_next = False
+                    # 文中の <next> の位置を計算
+                    if has_next:
+                        parts_next = chunk.split(_NEXT_PH)
+                        char_pos = 0
+                        total_chars = len(clean)
+                        for seg in parts_next[:-1]:
+                            char_pos += len(seg.strip())
+                            if total_chars > 0:
+                                ratio = char_pos / total_chars
+                            else:
+                                ratio = 0.0
+                            next_positions.append((len(sentences), min(ratio, 1.0)))
+                    sentences.append(clean)
+                elif has_next:
+                    # テキストなしで <next> のみ → 境界として保留
+                    pending_next = True
             elif pi % 3 == 1:
                 # 数値部分 (次の pi % 3 == 2 が単位)
                 num = float(parts[pi])
@@ -144,13 +189,17 @@ def _split_sentences(text: str) -> tuple[list[str], list[float | None], float]:
             # pi % 3 == 2 は単位 (pi % 3 == 1 で処理済み)
             pi += 1
 
+    # 末尾の pending_next
+    if pending_next and sentences:
+        next_positions.append((len(sentences) - 1, 1.0))
+
     # プレースホルダを復元
     def _restore(s):
         for i, orig in enumerate(placeholders):
             s = s.replace(f"\x00{i}\x00", orig)
         return s
 
-    return [_restore(s) for s in sentences], pauses, leading_pause
+    return [_restore(s) for s in sentences], pauses, leading_pause, next_positions
 
 
 def _make_silence(params, duration_sec: float) -> bytes:
@@ -267,12 +316,12 @@ class VoicevoxEngine(TTSEngine):
 
     def synthesize(self, text: str, on_chunk=None) -> bytes:
         """テキストからWAV音声を生成する。長文は文単位で分割して合成・結合する。"""
-        wav, _ = self.synthesize_with_timings(text, on_chunk=on_chunk)
+        wav, _, _ = self.synthesize_with_timings(text, on_chunk=on_chunk)
         return wav
 
     def synthesize_with_timings(
         self, text: str, on_chunk=None, max_workers: int = 4,
-    ) -> tuple[bytes, list[tuple[str, int, int]]]:
+    ) -> tuple[bytes, list[tuple[str, int, int]], list[tuple[int, float]]]:
         """テキストからWAV音声を生成し、各文のタイミング情報も返す。
 
         audio_query を並列実行し、multi_synthesis で一括合成する。
@@ -282,17 +331,18 @@ class VoicevoxEngine(TTSEngine):
             max_workers: audio_query の並列数
 
         Returns:
-            (WAVバイナリ, [(文テキスト, 開始ms, 長さms), ...])
+            (WAVバイナリ, [(文テキスト, 開始ms, 長さms), ...],
+             [(sentence_index, char_ratio), ...])
         """
         if not text:
-            return b"", []
+            return b"", [], []
 
         # <config> タグを事前除去 (configだけの行が空文にならないよう)
         text = _CONFIG_TAG.sub("", text)
 
-        sentences, pause_gaps, leading_pause = _split_sentences(text)
+        sentences, pause_gaps, leading_pause, next_positions = _split_sentences(text)
         if not sentences:
-            return b"", []
+            return b"", [], []
 
         # pause_gaps の None をデフォルト pause_sec に置換
         pauses = [g if g is not None else self.pause_sec for g in pause_gaps]
@@ -327,7 +377,8 @@ class VoicevoxEngine(TTSEngine):
         # --- multi_synthesis で一括合成 ---
         wav_chunks = self._multi_synthesis(queries)
 
-        return _concat_wav(wav_chunks, pauses=pauses, sentences=display_sentences, leading_pause=leading_pause)
+        wav, timings = _concat_wav(wav_chunks, pauses=pauses, sentences=display_sentences, leading_pause=leading_pause)
+        return wav, timings, next_positions
 
     def list_speakers(self) -> list[dict]:
         """利用可能な話者一覧を取得する。"""

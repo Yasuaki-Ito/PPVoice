@@ -18,8 +18,8 @@ except ImportError:
     _HAS_DND = False
 
 from pptx_reader import read_slides
-from pptx_writer import embed_audio
-from tts.voicevox import VoicevoxEngine
+from pptx_writer import embed_audio, _extract_click_groups
+from tts.voicevox import VoicevoxEngine, _NEXT_TAG
 from version import __version__
 
 ctk.set_appearance_mode("light")
@@ -133,6 +133,7 @@ class App(_AppBase):
         self._build_file_section(left)
         self._build_voice_section(left)
         self._build_subtitle_section(left)
+        self._build_animation_section(left)
 
         # 設定保存ボタン (左カラム最下部)
         ctk.CTkButton(
@@ -294,6 +295,7 @@ class App(_AppBase):
         ctk.CTkLabel(row, text="末尾の余白 (秒)", width=120, anchor="w").pack(side="left")
         self.end_pause_var = ctk.DoubleVar(value=2.0)
         ctk.CTkEntry(row, textvariable=self.end_pause_var, width=50).pack(side="left", padx=(4, 0))
+
 
     # --- 字幕設定 ---
     def _build_subtitle_section(self, parent):
@@ -468,6 +470,26 @@ class App(_AppBase):
 
         # 初期表示状態を設定
         self._on_style_changed()
+
+    # --- アニメーション ---
+    def _build_animation_section(self, parent):
+        sec = ctk.CTkFrame(parent)
+        sec.pack(fill="x", pady=(0, 12))
+
+        self._section_header(sec, "アニメーション")
+
+        # <next> 余りアニメーション
+        row = ctk.CTkFrame(sec, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=(3, 12))
+        self.auto_next_enabled_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(row, text="未指定アニメを自動再生", variable=self.auto_next_enabled_var,
+                         width=180).pack(side="left")
+        self.auto_next_var = ctk.DoubleVar(value=5.0)
+        ctk.CTkEntry(row, textvariable=self.auto_next_var, width=50).pack(side="left", padx=(4, 0))
+        ctk.CTkLabel(row, text="秒間隔", font=ctk.CTkFont(size=11), text_color="gray50").pack(side="left", padx=(4, 0))
+        ctk.CTkLabel(row, text="(OFFでクリック待ち)", font=ctk.CTkFont(size=11), text_color="gray50").pack(side="left", padx=(8, 0))
+        ctk.CTkButton(row, text="<next>確認", width=80, height=28,
+                       command=self._check_next_tags).pack(side="right")
 
     # --- 実行 / ログ ---
     def _build_action_section(self, parent):
@@ -679,6 +701,40 @@ class App(_AppBase):
             self.style_speaker_menu.set("---")
 
     # ------------------------------------------------------------------
+    # <next> / アニメーション チェック
+    # ------------------------------------------------------------------
+
+    def _check_next_tags(self):
+        """各スライドのクリックアニメーション数と <next> タグ数を比較してログに出力する。"""
+        path = self.input_var.get()
+        if not path or not os.path.isfile(path):
+            self._log("入力ファイルが指定されていません。\n")
+            return
+        try:
+            slides = read_slides(path)
+        except Exception as e:
+            self._log(f"PPTXの読み込みに失敗: {e}\n")
+            return
+
+        self._log("--- <next> / アニメーション チェック ---\n")
+        for si in slides:
+            sld = si.slide._element
+            click_groups, _ = _extract_click_groups(sld)
+            n_clicks = len(click_groups)
+            n_next = len(_NEXT_TAG.findall(si.notes_text)) if si.notes_text else 0
+            status = ""
+            if n_next > n_clicks and n_clicks > 0:
+                status = " ← <next> が多い (余分は無視)"
+            elif n_next > 0 and n_clicks == 0:
+                status = " ← アニメなし (<next> は無視)"
+            elif n_clicks > n_next and n_next > 0:
+                status = f" ← 余り {n_clicks - n_next} グループ"
+            elif n_clicks > 0 and n_next == 0:
+                status = " ← <next> なし (アニメ削除)"
+            self._log(f"  スライド {si.index + 1}: アニメ={n_clicks}, <next>={n_next}{status}\n")
+        self._log("---\n")
+
+    # ------------------------------------------------------------------
     # テスト再生
     # ------------------------------------------------------------------
 
@@ -715,7 +771,7 @@ class App(_AppBase):
         try:
             engine = VoicevoxEngine(speaker_id=speaker_id, base_url=url,
                                     speed_scale=speed, pitch_scale=pitch)
-            wav, timings = engine.synthesize_with_timings(text)
+            wav, timings, _ = engine.synthesize_with_timings(text)
             self.after(0, lambda: self.test_play_btn.configure(text="■ 停止", state="normal"))
 
             # 字幕を再生タイミングに合わせてログに表示
@@ -798,7 +854,10 @@ class App(_AppBase):
             self.pitch_var.set(float(config["pitch"]))
         if "end_pause" in config:
             self.end_pause_var.set(float(config["end_pause"]))
-
+        if "auto_next" in config:
+            self.auto_next_var.set(float(config["auto_next"]))
+        if "auto_next_enabled" in config:
+            self.auto_next_enabled_var.set(config["auto_next_enabled"].lower() in ("on", "true", "1"))
         # --- 字幕設定 ---
         if "subtitle" in config:
             self.subtitle_var.set(config["subtitle"].lower() in ("on", "true", "1"))
@@ -899,6 +958,8 @@ class App(_AppBase):
         _add("speed", f"{self.speed_var.get():.1f}")
         _add("pitch", f"{self.pitch_var.get():.2f}")
         _add("end_pause", f"{self.end_pause_var.get():.1f}")
+        _add("auto_next", f"{self.auto_next_var.get():.1f}")
+        _add("auto_next_enabled", "on" if self.auto_next_enabled_var.get() else "off")
 
         # 字幕
         _add("subtitle", "on" if self.subtitle_var.get() else "off")
@@ -1181,12 +1242,14 @@ class App(_AppBase):
 
         # 音声合成
         need_timings = use_subtitle
+        auto_next_sec = self.auto_next_var.get()
         print(f"\n音声を合成しています (speaker={speaker_id}, pause={pause_sec}s)...")
         engine = VoicevoxEngine(speaker_id=speaker_id, base_url=url, pause_sec=pause_sec,
                                 speed_scale=speed_scale, pitch_scale=pitch_scale)
 
         slide_audio = []
         slide_timings = {}
+        slide_next_positions = {}
         processed = 0
 
         for info in slides:
@@ -1206,8 +1269,10 @@ class App(_AppBase):
                     print(f"    ({i + 1}/{total}) {text}")
 
                 if need_timings:
-                    wav, timings = engine.synthesize_with_timings(info.notes_text, on_chunk=on_chunk)
+                    wav, timings, next_pos = engine.synthesize_with_timings(info.notes_text, on_chunk=on_chunk)
                     slide_timings[info.index] = timings
+                    if next_pos:
+                        slide_next_positions[info.index] = next_pos
                 else:
                     wav = engine.synthesize(info.notes_text, on_chunk=on_chunk)
                 slide_audio.append((info.index, wav))
@@ -1241,6 +1306,8 @@ class App(_AppBase):
             subtitle_default_bold=sub_default_bold,
             subtitle_default_italic=sub_default_italic,
             subtitle_default_underline=sub_default_underline,
+            slide_next_positions=slide_next_positions if slide_next_positions else None,
+            auto_next_interval_ms=int(auto_next_sec * 1000) if self.auto_next_enabled_var.get() else -1,
         )
 
         self.after(0, self.progress.set, 1.0)

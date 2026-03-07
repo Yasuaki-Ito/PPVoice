@@ -19,7 +19,7 @@ except ImportError:
 
 from pptx_reader import read_slides
 from pptx_writer import embed_audio, _extract_click_groups
-from tts.voicevox import VoicevoxEngine, _NEXT_TAG
+from tts.voicevox import VoicevoxEngine, _NEXT_TAG, _READING_PATTERN, _BRACE_PATTERN
 from version import __version__
 
 ctk.set_appearance_mode("light")
@@ -721,7 +721,13 @@ class App(_AppBase):
             sld = si.slide._element
             click_groups, _ = _extract_click_groups(sld)
             n_clicks = len(click_groups)
-            n_next = len(_NEXT_TAG.findall(si.notes_text)) if si.notes_text else 0
+            if si.notes_text:
+                # {…} 内の <next> はエスケープ済みなので除外してカウント
+                _stripped = _READING_PATTERN.sub("", si.notes_text)
+                _stripped = _BRACE_PATTERN.sub("", _stripped)
+                n_next = len(_NEXT_TAG.findall(_stripped))
+            else:
+                n_next = 0
             status = ""
             if n_next > n_clicks and n_clicks > 0:
                 status = " ← <next> が多い (余分は無視)"

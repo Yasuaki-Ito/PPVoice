@@ -59,14 +59,15 @@ def _to_display(text: str) -> str:
     {テキスト} 内の <> はプレースホルダに変換し、
     書式タグとして解釈されないようにする。
     """
-    text = _READING_PATTERN.sub(r"\1", text)
-    # {テキスト} 内の <> をエスケープしてから展開 (先にやらないと中のタグが消える)
-    def _escape_brace(m):
+    # {表示|読み} / {テキスト} 内の <> をエスケープして展開
+    # (エスケープしないと中の制御タグが除去されてしまう)
+    def _escape_content(m):
         s = m.group(1).replace("<", _LT).replace(">", _GT)
         for ch, ph in _PUNCT_PH.items():
             s = s.replace(ch, ph)
         return s
-    text = _BRACE_PATTERN.sub(_escape_brace, text)
+    text = _READING_PATTERN.sub(_escape_content, text)
+    text = _BRACE_PATTERN.sub(_escape_content, text)
     # <wait>, <config>, <speed>, <pitch> タグを除去 (エスケープ済みのものはマッチしない)
     text = _WAIT_TAG.sub("", text)
     text = _CONFIG_TAG.sub("", text)

@@ -257,6 +257,30 @@ class App(_AppBase):
         self.pitch_label.pack(side="left")
         self.pitch_var.trace_add("write", lambda *_: self.pitch_label.configure(text=f"{self.pitch_var.get():.2f}"))
 
+        # 抑揚
+        row = ctk.CTkFrame(sec, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=3)
+        ctk.CTkLabel(row, text="抑揚", width=120, anchor="w").pack(side="left")
+        self.intonation_var = ctk.DoubleVar(value=1.0)
+        ctk.CTkSlider(row, from_=0.0, to=2.0, number_of_steps=20, variable=self.intonation_var).pack(
+            side="left", fill="x", expand=True, padx=(4, 8)
+        )
+        self.intonation_label = ctk.CTkLabel(row, text="1.0", width=40)
+        self.intonation_label.pack(side="left")
+        self.intonation_var.trace_add("write", lambda *_: self.intonation_label.configure(text=f"{self.intonation_var.get():.1f}"))
+
+        # 音量
+        row = ctk.CTkFrame(sec, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=3)
+        ctk.CTkLabel(row, text="音量", width=120, anchor="w").pack(side="left")
+        self.volume_var = ctk.DoubleVar(value=1.0)
+        ctk.CTkSlider(row, from_=0.0, to=2.0, number_of_steps=20, variable=self.volume_var).pack(
+            side="left", fill="x", expand=True, padx=(4, 8)
+        )
+        self.volume_label = ctk.CTkLabel(row, text="1.0", width=40)
+        self.volume_label.pack(side="left")
+        self.volume_var.trace_add("write", lambda *_: self.volume_label.configure(text=f"{self.volume_var.get():.1f}"))
+
         # テスト再生
         row = ctk.CTkFrame(sec, fg_color="transparent")
         row.pack(fill="x", padx=14, pady=3)
@@ -764,19 +788,22 @@ class App(_AppBase):
         url = self.url_var.get().strip()
         speed = self.speed_var.get()
         pitch = self.pitch_var.get()
+        intonation = self.intonation_var.get()
+        volume = self.volume_var.get()
 
         self.test_play_btn.configure(text="合成中...", state="disabled")
         thread = threading.Thread(
             target=self._test_play_worker,
-            args=(text, speaker_id, url, speed, pitch),
+            args=(text, speaker_id, url, speed, pitch, intonation, volume),
             daemon=True,
         )
         thread.start()
 
-    def _test_play_worker(self, text, speaker_id, url, speed, pitch):
+    def _test_play_worker(self, text, speaker_id, url, speed, pitch, intonation, volume):
         try:
             engine = VoicevoxEngine(speaker_id=speaker_id, base_url=url,
-                                    speed_scale=speed, pitch_scale=pitch)
+                                    speed_scale=speed, pitch_scale=pitch,
+                                    intonation_scale=intonation, volume_scale=volume)
             wav, timings, _ = engine.synthesize_with_timings(text)
             self.after(0, lambda: self.test_play_btn.configure(text="■ 停止", state="normal"))
 
@@ -858,6 +885,10 @@ class App(_AppBase):
             self.speed_var.set(float(config["speed"]))
         if "pitch" in config:
             self.pitch_var.set(float(config["pitch"]))
+        if "intonation" in config:
+            self.intonation_var.set(float(config["intonation"]))
+        if "volume" in config:
+            self.volume_var.set(float(config["volume"]))
         if "end_pause" in config:
             self.end_pause_var.set(float(config["end_pause"]))
         if "auto_next" in config:
@@ -963,6 +994,8 @@ class App(_AppBase):
         _add("pause", f"{self.pause_var.get():.1f}")
         _add("speed", f"{self.speed_var.get():.1f}")
         _add("pitch", f"{self.pitch_var.get():.2f}")
+        _add("intonation", f"{self.intonation_var.get():.1f}")
+        _add("volume", f"{self.volume_var.get():.1f}")
         _add("end_pause", f"{self.end_pause_var.get():.1f}")
         _add("auto_next", f"{self.auto_next_var.get():.1f}")
         _add("auto_next_enabled", "on" if self.auto_next_enabled_var.get() else "off")
@@ -1206,6 +1239,8 @@ class App(_AppBase):
         pause_sec = self.pause_var.get()
         speed_scale = self.speed_var.get()
         pitch_scale = self.pitch_var.get()
+        intonation_scale = self.intonation_var.get()
+        volume_scale = self.volume_var.get()
         end_pause_sec = self.end_pause_var.get()
         use_subtitle = self.subtitle_var.get()
         sub_style = self.style_var.get()
@@ -1251,7 +1286,8 @@ class App(_AppBase):
         auto_next_sec = self.auto_next_var.get()
         print(f"\n音声を合成しています (speaker={speaker_id}, pause={pause_sec}s)...")
         engine = VoicevoxEngine(speaker_id=speaker_id, base_url=url, pause_sec=pause_sec,
-                                speed_scale=speed_scale, pitch_scale=pitch_scale)
+                                speed_scale=speed_scale, pitch_scale=pitch_scale,
+                                intonation_scale=intonation_scale, volume_scale=volume_scale)
 
         slide_audio = []
         slide_timings = {}

@@ -10,17 +10,18 @@ import requests
 
 from .base import TTSEngine
 
-# 読み指定パターン: {表示テキスト|読み}
-_READING_PATTERN = re.compile(r"\{([^|}]+)\|([^}]+)\}")
+# 読み指定パターン: {表示テキスト|読み} or {表示テキスト|読み|アクセント位置}
+_READING_PATTERN = re.compile(r"\{([^|}]+)\|([^|}]+)(?:\|(\d+))?\}")
 # 保護パターン: {テキスト} (|なし) — 文分割を抑制
 _BRACE_PATTERN = re.compile(r"\{([^|}]+)\}")
 
 # 書式タグパターン: <b>, </b>, <i>, </i>, <u>, </u>, <color=#RRGGBB>, </color>,
 # <font=...>, </font>, <size=N>, </size>, <br>, <wait=Ns>,
-# <speed=N>, <pitch=N>, <config ...>
+# <speed=N>, <pitch=N>, <intonation=N>, <volume=N>, <config ...>
 _FORMAT_TAG = re.compile(
     r"</?(?:b|i|u|color(?:=#[0-9a-fA-F]{6})?|font(?:=[^>]+)?|size(?:=[+\-]?\d+)?"
-    r"|speed(?:=[\d.]+)?|pitch(?:=[+\-]?[\d.]+)?)>"
+    r"|speed(?:=[\d.]+)?|pitch(?:=[+\-]?[\d.]+)?"
+    r"|intonation(?:=[\d.]+)?|volume(?:=[\d.]+)?)>"
     r"|<br\s*/?>|<wait=[\d.]+\s*(?:ms|s)?\s*>|<config\s[^>]*>|<next\s*/?>",
     re.IGNORECASE,
 )
@@ -35,9 +36,11 @@ _SPLIT_BR = re.compile(r"<br\s*/?>", re.IGNORECASE)
 # 対応形式: <wait=1s>, <wait=0.5s>, <wait=500ms>, <wait=2> (単位なし=秒)
 _WAIT_TAG = re.compile(r"<wait=([\d.]+)\s*(ms|s)?\s*>", re.IGNORECASE)
 
-# <speed=N> / <pitch=N> パターン (音声パラメータ)
+# <speed=N> / <pitch=N> / <intonation=N> / <volume=N> パターン (音声パラメータ)
 _SPEED_TAG = re.compile(r"<speed=([\d.]+)>", re.IGNORECASE)
 _PITCH_TAG = re.compile(r"<pitch=([+\-]?[\d.]+)>", re.IGNORECASE)
+_INTONATION_TAG = re.compile(r"<intonation=([\d.]+)>", re.IGNORECASE)
+_VOLUME_TAG = re.compile(r"<volume=([\d.]+)>", re.IGNORECASE)
 
 # <next> パターン (アニメーション発火)
 _NEXT_TAG = re.compile(r"<next\s*/?>", re.IGNORECASE)
@@ -50,6 +53,27 @@ _PUNCT_PH = {
     "。": "\x04", "．": "\x05", ".": "\x06",
     "、": "\x07", "，": "\x10", ",": "\x11",
 }
+
+
+def _hira_to_kata(text: str) -> str:
+    """ひらがなをカタカナに変換する。"""
+    return "".join(
+        chr(ord(c) + 0x60) if "\u3041" <= c <= "\u3096" else c
+        for c in text
+    )
+
+
+def _extract_accents(text: str) -> list[tuple[str, int]]:
+    """文中の {表示|読み|N} からアクセント指定を抽出する。
+
+    Returns: [(カタカナ読み, accent_position), ...]
+    """
+    accents = []
+    for m in _READING_PATTERN.finditer(text):
+        if m.group(3) is not None:
+            katakana = _hira_to_kata(m.group(2))
+            accents.append((katakana, int(m.group(3))))
+    return accents
 
 
 def _to_display(text: str) -> str:
@@ -73,6 +97,8 @@ def _to_display(text: str) -> str:
     text = _CONFIG_TAG.sub("", text)
     text = _SPEED_TAG.sub("", text)
     text = _PITCH_TAG.sub("", text)
+    text = _INTONATION_TAG.sub("", text)
+    text = _VOLUME_TAG.sub("", text)
     text = _NEXT_TAG.sub("", text)
     # <br> → 改行 (エスケープ済みのものはマッチしない)
     return _SPLIT_BR.sub("\n", text)
@@ -271,14 +297,18 @@ class VoicevoxEngine(TTSEngine):
     """
 
     def __init__(self, speaker_id: int = 1, base_url: str = "http://localhost:50021",
-                 pause_sec: float = 0.5, speed_scale: float = 1.0, pitch_scale: float = 0.0):
+                 pause_sec: float = 0.5, speed_scale: float = 1.0, pitch_scale: float = 0.0,
+                 intonation_scale: float = 1.0, volume_scale: float = 1.0):
         self.speaker_id = speaker_id
         self.base_url = base_url.rstrip("/")
         self.pause_sec = pause_sec
         self.speed_scale = speed_scale
         self.pitch_scale = pitch_scale
+        self.intonation_scale = intonation_scale
+        self.volume_scale = volume_scale
 
-    def _audio_query(self, text: str, speed: float | None = None, pitch: float | None = None) -> dict:
+    def _audio_query(self, text: str, speed: float | None = None, pitch: float | None = None,
+                     intonation: float | None = None, volume: float | None = None) -> dict:
         """テキストから音声クエリを取得する。"""
         resp = requests.post(
             f"{self.base_url}/audio_query",
@@ -288,6 +318,52 @@ class VoicevoxEngine(TTSEngine):
         query = resp.json()
         query["speedScale"] = speed if speed is not None else self.speed_scale
         query["pitchScale"] = pitch if pitch is not None else self.pitch_scale
+        query["intonationScale"] = intonation if intonation is not None else self.intonation_scale
+        query["volumeScale"] = volume if volume is not None else self.volume_scale
+        return query
+
+    def _apply_accent_overrides(self, query: dict, accents: list[tuple[str, int]]) -> dict:
+        """accent_phrases のアクセント位置を上書きし、ピッチを再計算する。"""
+        if not accents:
+            return query
+        phrases = query.get("accent_phrases", [])
+        modified = False
+        for katakana, accent_pos in accents:
+            matched = None
+            # 完全一致を優先検索
+            for phrase in phrases:
+                mora_text = "".join(m["text"] for m in phrase["moras"])
+                if mora_text == katakana:
+                    matched = phrase
+                    break
+            # 見つからなければ前方一致 (助詞が結合されている場合: ハシヲ vs ハシ)
+            if matched is None:
+                for phrase in phrases:
+                    mora_text = "".join(m["text"] for m in phrase["moras"])
+                    if mora_text.startswith(katakana) and len(katakana) >= 2:
+                        matched = phrase
+                        break
+            if matched is not None:
+                matched["accent"] = accent_pos
+                modified = True
+        if modified:
+            # mora_pitch でピッチ再計算 (失敗時は mora_data を試す)
+            recalculated = False
+            for endpoint in ("mora_pitch", "mora_data"):
+                try:
+                    resp = requests.post(
+                        f"{self.base_url}/{endpoint}",
+                        params={"speaker": self.speaker_id},
+                        json=phrases,
+                    )
+                    resp.raise_for_status()
+                    query["accent_phrases"] = resp.json()
+                    recalculated = True
+                    break
+                except requests.RequestException:
+                    continue
+            if not recalculated:
+                print("[PPVoice] アクセント再計算に失敗しました (mora_pitch/mora_data 未対応)")
         return query
 
     def _synthesize_chunk(self, text: str) -> bytes:
@@ -351,20 +427,30 @@ class VoicevoxEngine(TTSEngine):
         display_sentences = [_to_display(s) for s in sentences]
         readings = [_to_reading(s) for s in sentences]
 
-        # 各文の <speed>/<pitch> タグを抽出 (最後にマッチした値を使用)
+        # 各文の <speed>/<pitch>/<intonation>/<volume> タグを抽出 (最後にマッチした値を使用)
         speed_per_sent: list[float | None] = []
         pitch_per_sent: list[float | None] = []
+        intonation_per_sent: list[float | None] = []
+        volume_per_sent: list[float | None] = []
         for s in sentences:
             sm = list(_SPEED_TAG.finditer(s))
             speed_per_sent.append(float(sm[-1].group(1)) if sm else None)
             pm = list(_PITCH_TAG.finditer(s))
             pitch_per_sent.append(float(pm[-1].group(1)) if pm else None)
+            im = list(_INTONATION_TAG.finditer(s))
+            intonation_per_sent.append(float(im[-1].group(1)) if im else None)
+            vm = list(_VOLUME_TAG.finditer(s))
+            volume_per_sent.append(float(vm[-1].group(1)) if vm else None)
+
+        # 各文のアクセント指定を抽出
+        accents_per_sent = [_extract_accents(s) for s in sentences]
 
         # --- audio_query を並列実行 ---
         queries = [None] * len(readings)
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             futures = {
-                pool.submit(self._audio_query, r, speed_per_sent[i], pitch_per_sent[i]): i
+                pool.submit(self._audio_query, r, speed_per_sent[i], pitch_per_sent[i],
+                            intonation_per_sent[i], volume_per_sent[i]): i
                 for i, r in enumerate(readings)
             }
             done_count = 0
@@ -374,6 +460,11 @@ class VoicevoxEngine(TTSEngine):
                 done_count += 1
                 if on_chunk:
                     on_chunk(idx, len(sentences), display_sentences[idx])
+
+        # --- アクセント上書き ---
+        for i, accents in enumerate(accents_per_sent):
+            if accents:
+                queries[i] = self._apply_accent_overrides(queries[i], accents)
 
         # --- multi_synthesis で一括合成 ---
         wav_chunks = self._multi_synthesis(queries)

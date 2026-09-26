@@ -27,6 +27,9 @@ _NS = {
     "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
     "p": "http://schemas.openxmlformats.org/presentationml/2006/main",
     "p14": "http://schemas.microsoft.com/office/powerpoint/2010/main",
+    "a14": "http://schemas.microsoft.com/office/drawing/2010/main",
+    "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
+    "mc": "http://schemas.openxmlformats.org/markup-compatibility/2006",
 }
 
 
@@ -156,6 +159,10 @@ _FORMAT_TAG = re.compile(
 # voicevox.py のプレースホルダと同じ値
 _LT = "\x02"
 _GT = "\x03"
+_LBRACE = "\x15"
+_RBRACE = "\x16"
+# 数式マーカー: \x13LaTeX\x14 (voicevox.py の _MATH_START / _MATH_END)
+_MATH_SPAN = re.compile("\x13(.*?)\x14", re.DOTALL)
 # 句読点プレースホルダ → 元の文字 (voicevox.py の _PUNCT_PH の逆)
 _PUNCT_PH_RESTORE = {
     "\x04": "。", "\x05": "．", "\x06": ".",
@@ -180,6 +187,7 @@ class _TextSegment:
     color: str | None = None  # hex RGB (e.g. "FF0000") or None
     font: str | None = None   # フォント名 or None (デフォルト)
     size: str | None = None   # "+2", "-1", "24" など or None (デフォルト)
+    math: bool = False        # True なら text は LaTeX (数式として描画)
 
 
 
@@ -197,13 +205,26 @@ def _parse_formatted_text(text: str) -> list[_TextSegment]:
     font_name: str | None = None
     size_spec: str | None = None
 
+    def _emit(raw: str):
+        """テキストを数式マーカーで分割してセグメントに追加する。"""
+        pos = 0
+        for mm in _MATH_SPAN.finditer(raw):
+            _emit_part(raw[pos:mm.start()], False)
+            _emit_part(mm.group(1), True)
+            pos = mm.end()
+        _emit_part(raw[pos:], False)
+
+    def _emit_part(raw: str, math: bool):
+        s = (raw.replace(_LT, "<").replace(_GT, ">")
+             .replace(_LBRACE, "{").replace(_RBRACE, "}"))
+        if s:
+            segments.append(_TextSegment(s, bold, italic, underline, color, font_name, size_spec, math))
+
     last_end = 0
     for m in _FORMAT_TAG.finditer(text):
         # タグ前のテキストをセグメントに追加
         if m.start() > last_end:
-            plain = text[last_end:m.start()].replace(_LT, "<").replace(_GT, ">")
-            if plain:
-                segments.append(_TextSegment(plain, bold, italic, underline, color, font_name, size_spec))
+            _emit(text[last_end:m.start()])
 
         closing = m.group(1) == "/"
         tag_name = m.group(2).lower()
@@ -226,17 +247,81 @@ def _parse_formatted_text(text: str) -> list[_TextSegment]:
 
     # 残りテキスト
     if last_end < len(text):
-        remaining = text[last_end:].replace(_LT, "<").replace(_GT, ">")
-        if remaining:
-            segments.append(_TextSegment(remaining, bold, italic, underline, color, font_name, size_spec))
+        _emit(text[last_end:])
 
     # タグなしの場合はそのまま1セグメント
     if not segments:
-        plain = text.replace(_LT, "<").replace(_GT, ">")
-        if plain:
-            segments.append(_TextSegment(plain))
+        _emit(text)
 
     return segments
+
+
+def _latex_to_omml(latex: str) -> etree._Element:
+    """LaTeX を OMML (<m:oMath>) 要素に変換する。
+
+    latex2mathml で MathML に変換し、mathml2omml で OMML に変換する。
+    """
+    import latex2mathml.converter
+    import mathml2omml
+
+    mathml = latex2mathml.converter.convert(latex)
+    omml = mathml2omml.convert(mathml)
+    # mathml2omml は名前空間宣言なしの文字列を返すため、ラップしてパースする
+    wrapper = etree.fromstring(f'<root xmlns:m="{_NS["m"]}">{omml}</root>')
+    o_math = wrapper.find(_qn("m:oMath"))
+    if o_math is None:
+        raise ValueError("OMML 変換結果に m:oMath がありません")
+    # 次数なしの根号 (\sqrt{x}) は次数ボックスを非表示にする
+    for rad in o_math.iter(_qn("m:rad")):
+        if rad.find(_qn("m:deg")) is None:
+            rad_pr = etree.Element(_qn("m:radPr"))
+            etree.SubElement(rad_pr, _qn("m:degHide")).set(_qn("m:val"), "1")
+            rad.insert(0, rad_pr)
+            rad.insert(1, etree.Element(_qn("m:deg")))
+    return o_math
+
+
+def _replace_run_with_math(run_element, latex: str) -> bool:
+    """テキストラン (<a:r>) を数式に置き換える。
+
+    ランの書式 (<a:rPr>: 色・サイズ・輪郭・光彩など) を数式内の各ランに引き継ぐ。
+    PowerPoint 2010 以降は <a14:m> の数式を表示し、
+    それ以前の環境では元のラン (LaTeX 文字列) が表示される。
+
+    Returns:
+        変換に成功したら True
+    """
+    try:
+        o_math = _latex_to_omml(latex)
+    except Exception as e:
+        print(f"数式の変換に失敗しました (LaTeX のまま表示します): {latex} ({e})")
+        return False
+
+    rPr = run_element.find(_qn("a:rPr"))
+    for m_r in o_math.iter(_qn("m:r")):
+        if rPr is None:
+            break
+        math_rPr = copy.deepcopy(rPr)
+        # 斜体は数式側 (m:sty) で決まるため、字幕の斜体指定は外す
+        math_rPr.attrib.pop("i", None)
+        for tag in ("a:latin", "a:ea"):
+            el = math_rPr.find(_qn(tag))
+            if el is None:
+                el = etree.SubElement(math_rPr, _qn(tag))
+            el.set("typeface", "Cambria Math")
+        # m:r の子要素順序: m:rPr, a:rPr, m:t
+        m_rPr = m_r.find(_qn("m:rPr"))
+        m_r.insert(1 if m_rPr is not None else 0, math_rPr)
+
+    alt = etree.Element(_qn("mc:AlternateContent"), nsmap={"mc": _NS["mc"]})
+    choice = etree.SubElement(alt, _qn("mc:Choice"), nsmap={"a14": _NS["a14"]})
+    choice.set("Requires", "a14")
+    a14_m = etree.SubElement(choice, _qn("a14:m"))
+    a14_m.append(o_math)
+    fallback = etree.SubElement(alt, _qn("mc:Fallback"))
+    run_element.addprevious(alt)
+    fallback.append(run_element)
+    return True
 
 
 def _add_subtitle_shapes(
@@ -300,12 +385,13 @@ def _add_subtitle_shapes(
         for seg in segments:
             run = p.add_run()
             t = seg.text
-            if kuten_mode != "そのまま":
+            # 数式内の句読点は置換しない
+            if kuten_mode != "そのまま" and not seg.math:
                 kc = _PUNCT_CHAR_MAP.get(kuten_mode, kuten_mode)
                 for ch in "。.．":
                     if ch != kc:
                         t = t.replace(ch, kc)
-            if touten_mode != "そのまま":
+            if touten_mode != "そのまま" and not seg.math:
                 tc = _PUNCT_CHAR_MAP.get(touten_mode, touten_mode)
                 for ch in "、,，":
                     if ch != tc:
@@ -343,14 +429,17 @@ def _add_subtitle_shapes(
                 if use_glow:
                     _apply_text_glow(run._r, glow_color=glow_color_hex,
                                      radius_emu=int(Pt(glow_radius_pt).emu))
+            if seg.math:
+                _replace_run_with_math(run._r, t)
 
     shape_ids = []
     for text, _, _ in timings:
         lines = text.split("\n")
-        num_lines = len(lines)
         line_emu = int(Pt(font_size).emu * 1.5)
+        # 数式を含む行は分数・添字で背が高くなるため行の高さを広げる
+        math_line_emu = int(Pt(font_size).emu * 1.8)
         pad_emu = int(Pt(font_size).emu * 0.6)
-        box_h = line_emu * num_lines + pad_emu
+        box_h = sum(math_line_emu if _MATH_SPAN.search(l) else line_emu for l in lines) + pad_emu
         box_top_adj = int(slide_h * (1 - bottom_margin_pct)) - box_h
 
         txBox = slide.shapes.add_textbox(box_left, box_top_adj, box_w, box_h)

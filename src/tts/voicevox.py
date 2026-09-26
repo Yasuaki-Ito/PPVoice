@@ -11,7 +11,10 @@ import requests
 from .base import TTSEngine
 
 # 読み指定パターン: {表示テキスト|読み} or {表示テキスト|読み|アクセント位置}
-_READING_PATTERN = re.compile(r"\{([^|}]+)\|([^|}]+)(?:\|(\d+))?\}")
+# 表示テキストが $LaTeX$ の場合は数式として扱う ({} や | を含んでもよい)
+_READING_PATTERN = re.compile(r"\{(\$(?:[^$\\]|\\.)+\$|[^|}]+)\|([^|}]+)(?:\|(\d+))?\}")
+# 数式の表示テキスト: $LaTeX$
+_MATH_DISPLAY = re.compile(r"\$((?:[^$\\]|\\.)+)\$")
 # 保護パターン: {テキスト} (|なし) — 文分割を抑制
 _BRACE_PATTERN = re.compile(r"\{([^|}]+)\}")
 
@@ -48,6 +51,12 @@ _NEXT_TAG = re.compile(r"<next\s*/?>", re.IGNORECASE)
 # プレースホルダ: {テキスト} 内の文字をエスケープするための代替文字
 _LT = "\x02"
 _GT = "\x03"
+# 数式マーカー: 字幕テキスト中の LaTeX を囲む (pptx_writer.py で数式に変換)
+_MATH_START = "\x13"
+_MATH_END = "\x14"
+# 数式内の {} ({テキスト} パターンとして展開されないよう退避)
+_LBRACE = "\x15"
+_RBRACE = "\x16"
 # 句読点プレースホルダ ({...} 内の句読点を置換対象外にする)
 _PUNCT_PH = {
     "。": "\x04", "．": "\x05", ".": "\x06",
@@ -90,7 +99,15 @@ def _to_display(text: str) -> str:
         for ch, ph in _PUNCT_PH.items():
             s = s.replace(ch, ph)
         return s
-    text = _READING_PATTERN.sub(_escape_content, text)
+
+    def _escape_reading(m):
+        mm = _MATH_DISPLAY.fullmatch(m.group(1))
+        if mm:
+            latex = (mm.group(1).replace("<", _LT).replace(">", _GT)
+                     .replace("{", _LBRACE).replace("}", _RBRACE))
+            return f"{_MATH_START}{latex}{_MATH_END}"
+        return _escape_content(m)
+    text = _READING_PATTERN.sub(_escape_reading, text)
     text = _BRACE_PATTERN.sub(_escape_content, text)
     # <wait>, <config>, <speed>, <pitch> タグを除去 (エスケープ済みのものはマッチしない)
     text = _WAIT_TAG.sub("", text)

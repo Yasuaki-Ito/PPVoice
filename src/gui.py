@@ -22,6 +22,16 @@ from pptx_writer import embed_audio, _extract_click_groups
 from tts.voicevox import VoicevoxEngine, _NEXT_TAG, _READING_PATTERN, _BRACE_PATTERN
 from version import __version__
 
+# 字幕テキスト中のプレースホルダ → ログ表示用の文字
+_DISPLAY_UNESCAPE = {"\x02": "<", "\x03": ">", "\x13": "$", "\x14": "$", "\x15": "{", "\x16": "}"}
+
+
+def _unescape_display(text: str) -> str:
+    """字幕テキストのプレースホルダをログ表示用に戻す。"""
+    for ph, ch in _DISPLAY_UNESCAPE.items():
+        text = text.replace(ph, ch)
+    return text
+
 ctk.set_appearance_mode("light")
 ctk.set_default_color_theme(
     os.path.join(os.path.dirname(__file__), "theme_modern.json")
@@ -545,9 +555,9 @@ class App(_AppBase):
     def _set_input_file(self, path: str):
         """入力ファイルを設定し、<config> タグを自動読み込みする。"""
         self.input_var.set(path)
-        if not self.output_var.get():
-            base = os.path.splitext(path)[0]
-            self.output_var.set(base + "_speech.pptx")
+        # 入力ファイルを指定するたびに出力ファイル名も追従させる
+        base = os.path.splitext(path)[0]
+        self.output_var.set(base + "_speech.pptx")
         # <config> タグの自動読み込み
         try:
             slides = read_slides(path)
@@ -842,7 +852,7 @@ class App(_AppBase):
             if self._test_stop:
                 return
             clean = self._STRIP_TAGS.sub("", disp_text)
-            clean = clean.replace("\x02", "<").replace("\x03", ">")
+            clean = _unescape_display(clean)
             self.after(0, lambda t=clean: self._log(f"  {t}\n"))
 
     def _test_play_reset(self):
@@ -1308,7 +1318,7 @@ class App(_AppBase):
                 def on_chunk(i, total, text, _sn=slide_num):
                     if self._cancel_event.is_set():
                         raise _CancelledError()
-                    print(f"    ({i + 1}/{total}) {text}")
+                    print(f"    ({i + 1}/{total}) {_unescape_display(text)}")
 
                 if need_timings:
                     wav, timings, next_pos = engine.synthesize_with_timings(info.notes_text, on_chunk=on_chunk)

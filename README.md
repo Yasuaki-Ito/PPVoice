@@ -18,7 +18,7 @@ PowerPointのノート欄から音声を自動合成し、**音声付きPPTX**�
 
 PPVoice で生成した音声付きスライドの紹介動画です（クリックで再生）。この動画自体も PPVoice で作成されています。
 
-[![紹介動画](https://img.youtube.com/vi/twyXn2vtrYw/maxresdefault.jpg)](https://youtu.be/T7TKvOUW8BM)
+[![紹介動画](https://img.youtube.com/vi/T7TKvOUW8BM/maxresdefault.jpg)](https://youtu.be/T7TKvOUW8BM)
 
 ![スクリーンショット](docs/screenshot.png)
 

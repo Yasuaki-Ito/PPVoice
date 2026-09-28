@@ -18,7 +18,7 @@ PowerPointのノート欄から音声を自動合成し、**音声付きPPTX**�
 
 PPVoice で生成した音声付きスライドの紹介動画です（クリックで再生）。この動画自体も PPVoice で作成されています。
 
-[![紹介動画](https://img.youtube.com/vi/twyXn2vtrYw/maxresdefault.jpg)](https://youtu.be/twyXn2vtrYw)
+[![紹介動画](https://img.youtube.com/vi/twyXn2vtrYw/maxresdefault.jpg)](https://youtu.be/T7TKvOUW8BM)
 
 ![スクリーンショット](docs/screenshot.png)
 
@@ -172,6 +172,8 @@ VOICEVOXの読み上げでアクセント（音の高低）が正しくない場
 
 GUI の字幕設定で「文字装飾」の **太字**・**斜体**・**下線** のチェックボックスを切り替えると、字幕全体のデフォルトスタイルを変更できます。ノート内の `<b>`, `<i>`, `<u>` タグによる個別指定はデフォルト設定に加えて適用されます。
 
+**数式を太字** をオンにすると（デフォルト: オン）、字幕内の数式を太字で表示します。PowerPoint の数式は Cambria Math で描画され、フォントを変更できないため、太めの字幕フォントと並べたときに細く見えるのを補います。
+
 ## 句読点の置換
 
 字幕に表示される句読点を別の文字に置き換えることができます。GUI の「置換」で読点グループ（`、` `，` `,`）と句点グループ（`。` `．` `.`）それぞれの変換先を選択できます。`{...}` で囲まれたテキスト内の句読点は置換の対象外です。
@@ -181,7 +183,7 @@ GUI の字幕設定で「文字装飾」の **太字**・**斜体**・**下線**
 GUI の「設定保存」ボタンを押すと、現在の話者・字幕スタイルなどの設定を `<config ...>` タグとしてコピーできます。このタグを PPTX の任意のスライドのノート欄に貼り付けておくと、次回ファイルを開いた際に設定が自動的に復元されます。
 
 ```
-<config speaker="ずんだもん" style="ノーマル" pause=0.5 fontsize=18 subtitle_style=outline bold=off italic=off underline=off>
+<config speaker="ずんだもん" style="ノーマル" pause=0.5 fontsize=18 subtitle_style=outline bold=off italic=off underline=off math_bold=on>
 ```
 
 必要なキーだけを書けば部分的に設定を上書きできます。複数のスライドにタグがある場合は後のタグが優先されます。

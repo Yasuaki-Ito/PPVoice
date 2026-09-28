@@ -11,6 +11,7 @@ from tkinter import colorchooser, filedialog, font as tkfont, messagebox
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import customtkinter as ctk
+import requests
 try:
     from tkinterdnd2 import DND_FILES, TkinterDnD
     _HAS_DND = True
@@ -222,7 +223,8 @@ class App(_AppBase):
         ctk.CTkLabel(row, text="VOICEVOX URL", width=120, anchor="w").pack(side="left")
         self.url_var = ctk.StringVar(value="http://localhost:50021")
         ctk.CTkEntry(row, textvariable=self.url_var).pack(side="left", fill="x", expand=True, padx=(4, 6))
-        ctk.CTkButton(row, text="話者取得", width=80, command=self._fetch_speakers).pack(side="left")
+        self.fetch_btn = ctk.CTkButton(row, text="話者取得", width=80, command=self._fetch_speakers)
+        self.fetch_btn.pack(side="left")
 
         # 話者選択
         row = ctk.CTkFrame(sec, fg_color="transparent")
@@ -368,7 +370,9 @@ class App(_AppBase):
         self.default_italic_var = ctk.BooleanVar(value=False)
         ctk.CTkCheckBox(row, text="斜体", variable=self.default_italic_var).pack(side="left", padx=(0, 12))
         self.default_underline_var = ctk.BooleanVar(value=False)
-        ctk.CTkCheckBox(row, text="下線", variable=self.default_underline_var).pack(side="left")
+        ctk.CTkCheckBox(row, text="下線", variable=self.default_underline_var).pack(side="left", padx=(0, 12))
+        self.math_bold_var = ctk.BooleanVar(value=True)
+        ctk.CTkCheckBox(row, text="数式を太字", variable=self.math_bold_var).pack(side="left")
 
         # スタイル
         row = ctk.CTkFrame(sec, fg_color="transparent")
@@ -680,16 +684,40 @@ class App(_AppBase):
         if path:
             self.output_var.set(path)
 
+    # 話者取得のタイムアウト (接続, 読み込み) 秒
+    _FETCH_TIMEOUT = (5, 30)
+
     def _fetch_speakers(self):
+        """話者一覧を別スレッドで取得する (取得中も GUI が固まらないように)。"""
         self._log_clear()
         url = self.url_var.get().strip().rstrip("/")
-        try:
-            engine = VoicevoxEngine(base_url=url)
-            speakers = engine.list_speakers()
-        except Exception as e:
-            self._log(f"話者取得失敗: {e}\nVOICEVOXエンジンが起動しているか確認してください。\n")
-            return
+        self._log(f"VOICEVOXエンジン ({url}) に接続中...\n")
+        self.fetch_btn.configure(text="取得中...", state="disabled")
+        threading.Thread(target=self._fetch_speakers_worker, args=(url,), daemon=True).start()
 
+    def _fetch_speakers_worker(self, url: str):
+        try:
+            speakers = VoicevoxEngine(base_url=url).list_speakers(timeout=self._FETCH_TIMEOUT)
+        except requests.exceptions.ConnectTimeout:
+            msg = f"話者取得失敗: {url} に接続できませんでした (タイムアウト {self._FETCH_TIMEOUT[0]}秒)。"
+        except requests.exceptions.ConnectionError:
+            msg = f"話者取得失敗: {url} に接続できませんでした。"
+        except requests.exceptions.Timeout:
+            msg = f"話者取得失敗: {url} から応答がありませんでした (タイムアウト {self._FETCH_TIMEOUT[1]}秒)。"
+        except Exception as e:
+            msg = f"話者取得失敗: {e}"
+        else:
+            self.after(0, self._on_speakers_fetched, speakers)
+            return
+        self.after(0, self._on_speakers_fetch_failed,
+                   msg + "\nVOICEVOXエンジンが起動しているか、URLが正しいか確認してください。\n")
+
+    def _on_speakers_fetch_failed(self, msg: str):
+        self.fetch_btn.configure(text="話者取得", state="normal")
+        self._log(msg)
+
+    def _on_speakers_fetched(self, speakers: list[dict]):
+        self.fetch_btn.configure(text="話者取得", state="normal")
         self._speakers_cache = speakers
         self._speaker_map.clear()
         # 話者名 → [(スタイルラベル, ID), ...] のマッピング
@@ -946,6 +974,8 @@ class App(_AppBase):
             self.default_italic_var.set(config["italic"].lower() in ("on", "true", "1"))
         if "underline" in config:
             self.default_underline_var.set(config["underline"].lower() in ("on", "true", "1"))
+        if "math_bold" in config:
+            self.math_bold_var.set(config["math_bold"].lower() in ("on", "true", "1"))
 
     def _set_color(self, hex_val: str, var: ctk.StringVar, btn: ctk.CTkButton):
         """色の変数とボタン表示を更新する。"""
@@ -1031,6 +1061,7 @@ class App(_AppBase):
         _add("bold", "on" if self.default_bold_var.get() else "off")
         _add("italic", "on" if self.default_italic_var.get() else "off")
         _add("underline", "on" if self.default_underline_var.get() else "off")
+        _add("math_bold", "on" if self.math_bold_var.get() else "off")
 
         return "<config " + " ".join(parts) + ">"
 
@@ -1272,6 +1303,7 @@ class App(_AppBase):
         sub_default_bold = self.default_bold_var.get()
         sub_default_italic = self.default_italic_var.get()
         sub_default_underline = self.default_underline_var.get()
+        sub_math_bold = self.math_bold_var.get()
 
         # スライド読み込み
         print(f"PPTXを読み込んでいます: {input_path}")
@@ -1358,6 +1390,7 @@ class App(_AppBase):
             subtitle_default_bold=sub_default_bold,
             subtitle_default_italic=sub_default_italic,
             subtitle_default_underline=sub_default_underline,
+            subtitle_math_bold=sub_math_bold,
             slide_next_positions=slide_next_positions if slide_next_positions else None,
             auto_next_interval_ms=int(auto_next_sec * 1000) if self.auto_next_enabled_var.get() else -1,
         )

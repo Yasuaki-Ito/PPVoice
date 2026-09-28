@@ -489,8 +489,12 @@ class VoicevoxEngine(TTSEngine):
         wav, timings = _concat_wav(wav_chunks, pauses=pauses, sentences=display_sentences, leading_pause=leading_pause)
         return wav, timings, next_positions
 
-    def list_speakers(self) -> list[dict]:
-        """利用可能な話者一覧を取得する。"""
-        resp = requests.get(f"{self.base_url}/speakers")
+    def list_speakers(self, timeout: float | tuple[float, float] | None = None) -> list[dict]:
+        """利用可能な話者一覧を取得する。
+
+        Args:
+            timeout: requests のタイムアウト秒 (接続, 読み込み)。None なら無制限
+        """
+        resp = requests.get(f"{self.base_url}/speakers", timeout=timeout)
         resp.raise_for_status()
         return resp.json()

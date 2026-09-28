@@ -47,11 +47,17 @@ def get_wav_duration_ms(wav_bytes: bytes) -> int:
 
 
 def _next_shape_id(slide) -> int:
-    """スライド内で使用されていないシェイプIDを返す"""
+    """スライド内で使用されていないシェイプIDを返す
+
+    slide.shapes は mc:AlternateContent に包まれたシェイプ (PowerPoint が保存した
+    数式入りテキストボックスなど) を列挙しないため、全 cNvPr の id を走査する。
+    """
     max_id = 1
-    for shape in slide.shapes:
-        if shape.shape_id > max_id:
-            max_id = shape.shape_id
+    for el in slide._element.iter("{*}cNvPr"):
+        try:
+            max_id = max(max_id, int(el.get("id", "0")))
+        except ValueError:
+            pass
     return max_id + 1
 
 
@@ -281,12 +287,15 @@ def _latex_to_omml(latex: str) -> etree._Element:
     return o_math
 
 
-def _replace_run_with_math(run_element, latex: str) -> bool:
+def _replace_run_with_math(run_element, latex: str, bold: bool = False) -> bool:
     """テキストラン (<a:r>) を数式に置き換える。
 
     ランの書式 (<a:rPr>: 色・サイズ・輪郭・光彩など) を数式内の各ランに引き継ぐ。
     PowerPoint 2010 以降は <a14:m> の数式を表示し、
     それ以前の環境では元のラン (LaTeX 文字列) が表示される。
+
+    Args:
+        bold: True なら数式を太字にする (数式は Cambria Math 固定で細く見えるため)
 
     Returns:
         変換に成功したら True
@@ -304,6 +313,8 @@ def _replace_run_with_math(run_element, latex: str) -> bool:
         math_rPr = copy.deepcopy(rPr)
         # 斜体は数式側 (m:sty) で決まるため、字幕の斜体指定は外す
         math_rPr.attrib.pop("i", None)
+        if bold:
+            math_rPr.set("b", "1")
         for tag in ("a:latin", "a:ea"):
             el = math_rPr.find(_qn(tag))
             if el is None:
@@ -346,6 +357,7 @@ def _add_subtitle_shapes(
     default_bold: bool = False,
     default_italic: bool = False,
     default_underline: bool = False,
+    math_bold: bool = True,
 ) -> tuple[list[int], list[tuple[str, int, int]]]:
     """字幕用テキストボックスをスライドに追加する。
 
@@ -363,6 +375,7 @@ def _add_subtitle_shapes(
         default_bold: デフォルトの太字設定 (デフォルト: True)
         default_italic: デフォルトの斜体設定 (デフォルト: False)
         default_underline: デフォルトの下線設定 (デフォルト: False)
+        math_bold: 数式を太字にする (デフォルト: True)
 
     Returns:
         (シェイプIDリスト, 分割後のタイミングリスト)
@@ -430,7 +443,7 @@ def _add_subtitle_shapes(
                     _apply_text_glow(run._r, glow_color=glow_color_hex,
                                      radius_emu=int(Pt(glow_radius_pt).emu))
             if seg.math:
-                _replace_run_with_math(run._r, t)
+                _replace_run_with_math(run._r, t, bold=math_bold)
 
     shape_ids = []
     for text, _, _ in timings:
@@ -784,6 +797,7 @@ def embed_audio(
     subtitle_default_bold: bool = False,
     subtitle_default_italic: bool = False,
     subtitle_default_underline: bool = False,
+    subtitle_math_bold: bool = True,
     slide_next_positions: dict[int, list[tuple[int, float]]] | None = None,
     auto_next_interval_ms: int = 5000,
 ) -> None:
@@ -855,6 +869,7 @@ def embed_audio(
                 default_bold=subtitle_default_bold,
                 default_italic=subtitle_default_italic,
                 default_underline=subtitle_default_underline,
+                math_bold=subtitle_math_bold,
             )
             # (shape_id, appear_ms, disappear_ms) のリストを作成
             subtitle_anim_data = []

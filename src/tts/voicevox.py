@@ -48,6 +48,9 @@ _VOLUME_TAG = re.compile(r"<volume=([\d.]+)>", re.IGNORECASE)
 # <next> パターン (アニメーション発火)
 _NEXT_TAG = re.compile(r"<next\s*/?>", re.IGNORECASE)
 
+# _split_sentences で {...} を保護するプレースホルダ: \x00番号\x00
+_PLACEHOLDER = re.compile("\x00(\\d+)\x00")
+
 # プレースホルダ: {テキスト} 内の文字をエスケープするための代替文字
 _LT = "\x02"
 _GT = "\x03"
@@ -238,10 +241,10 @@ def _split_sentences(text: str) -> tuple[list[str], list[float | None], float, l
         next_positions.append((len(sentences) - 1, 1.0))
 
     # プレースホルダを復元
+    # 左から1回だけ走査する。番号順の str.replace だと、隣接するプレースホルダの
+    # 境界 (例: "\x004\x002\x005\x00" の中の "\x002\x00") を誤って置換してしまう
     def _restore(s):
-        for i, orig in enumerate(placeholders):
-            s = s.replace(f"\x00{i}\x00", orig)
-        return s
+        return _PLACEHOLDER.sub(lambda m: placeholders[int(m.group(1))], s)
 
     return [_restore(s) for s in sentences], pauses, leading_pause, next_positions
 

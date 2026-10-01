@@ -1324,7 +1324,6 @@ class App(_AppBase):
         print(f"  {notes_count} スライドにノートあり")
 
         # 音声合成
-        need_timings = use_subtitle
         auto_next_sec = self.auto_next_var.get()
         print(f"\n音声を合成しています (speaker={speaker_id}, pause={pause_sec}s)...")
         engine = VoicevoxEngine(speaker_id=speaker_id, base_url=url, pause_sec=pause_sec,
@@ -1352,13 +1351,12 @@ class App(_AppBase):
                         raise _CancelledError()
                     print(f"    ({i + 1}/{total}) {_unescape_display(text)}")
 
-                if need_timings:
-                    wav, timings, next_pos = engine.synthesize_with_timings(info.notes_text, on_chunk=on_chunk)
-                    slide_timings[info.index] = timings
-                    if next_pos:
-                        slide_next_positions[info.index] = next_pos
-                else:
-                    wav = engine.synthesize(info.notes_text, on_chunk=on_chunk)
+                # 字幕オフでも <next> の発火タイミング計算に文のタイミングが必要なため、
+                # 常にタイミング付きで合成する
+                wav, timings, next_pos = engine.synthesize_with_timings(info.notes_text, on_chunk=on_chunk)
+                slide_timings[info.index] = timings
+                if next_pos:
+                    slide_next_positions[info.index] = next_pos
                 slide_audio.append((info.index, wav))
 
             processed += 1
@@ -1371,7 +1369,8 @@ class App(_AppBase):
             slide_audio,
             output_path,
             end_pause_ms=int(end_pause_sec * 1000),
-            slide_timings=slide_timings if need_timings else None,
+            slide_timings=slide_timings,
+            show_subtitles=use_subtitle,
             subtitle_font_size=sub_size,
             subtitle_font_name=sub_font_name,
             subtitle_bottom_pct=sub_bottom,

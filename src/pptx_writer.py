@@ -779,6 +779,7 @@ def embed_audio(
     output_path: str,
     end_pause_ms: int = 2000,
     slide_timings: dict[int, list[tuple[str, int, int]]] | None = None,
+    show_subtitles: bool = True,
     subtitle_font_size: int = 18,
     subtitle_font_name: str = "",
     subtitle_bottom_pct: float = 0.05,
@@ -808,7 +809,9 @@ def embed_audio(
         slide_audio: (スライドインデックス(0始まり), WAVバイナリ) のリスト
         output_path: 出力PPTXファイルパス
         end_pause_ms: 音声終了後、次スライドに進むまでの待機時間(ms)
-        slide_timings: {スライドインデックス: [(文, 開始ms, 長さms), ...]} 字幕タイミング
+        slide_timings: {スライドインデックス: [(文, 開始ms, 長さms), ...]}
+            文のタイミング。字幕表示と <next> の発火タイミング計算に使う
+        show_subtitles: 字幕を追加する (False でも slide_timings は <next> の計算に使う)
         slide_next_positions: {スライドインデックス: [(sent_idx, ratio), ...]}
         auto_next_interval_ms: 余りクリックグループの自動発火間隔 (ms)
     """
@@ -838,7 +841,7 @@ def embed_audio(
         # --- 字幕テキストボックス追加 ---
         subtitle_anim_data = None
         timings = (slide_timings or {}).get(slide_idx)
-        if timings:
+        if timings and show_subtitles:
             fc = RGBColor(
                 int(subtitle_font_color[0:2], 16),
                 int(subtitle_font_color[2:4], 16),
@@ -886,7 +889,9 @@ def embed_audio(
 
         # <next> タグがある場合、既存アニメーションを退避
         next_positions = (slide_next_positions or {}).get(slide_idx, [])
-        click_groups, bld_lst = _extract_click_groups(sld) if next_positions else ([], None)
+        # <next> がなくても元のクリックアニメーションは退避して組み戻す
+        # (余りグループとして自動発火 or クリック待ちになる)
+        click_groups, bld_lst = _extract_click_groups(sld)
 
         # 既存の transition / timing を除去
         old_transition = sld.find(_qn("p:transition"))
@@ -908,8 +913,8 @@ def embed_audio(
                     # 自動発火
                     last_next_ms = click_ms_list[-1] if click_ms_list else 0
                     base_ms = max(duration_ms, last_next_ms)
-                    for j in range(len(click_ms_list), len(click_groups)):
-                        surplus_idx = j - len(click_ms_list)
+                    n_surplus = len(click_groups) - len(click_ms_list)
+                    for surplus_idx in range(n_surplus):
                         click_ms_list.append(base_ms + auto_next_interval_ms * (surplus_idx + 1))
                 else:
                     # クリック待ちのまま残す (None = indefinite)

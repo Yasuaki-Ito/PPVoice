@@ -17,6 +17,9 @@ from pptx.opc.package import Part
 from pptx.opc.packuri import PackURI
 from pptx.util import Emu, Pt
 
+# 字幕テキスト (notes._to_display の出力) に含まれるプレースホルダ
+from notes import _GT, _LBRACE, _LT, _MATH_END, _MATH_START, _PUNCT_PH, _RBRACE
+
 # リレーションシップタイプ
 RT_AUDIO = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/audio"
 RT_MEDIA = "http://schemas.microsoft.com/office/2007/relationships/media"
@@ -162,18 +165,10 @@ _FORMAT_TAG = re.compile(
     r"<(/?)(b|i|u|color|font|size)(?:=([^>]+))?>",
     re.IGNORECASE,
 )
-# voicevox.py のプレースホルダと同じ値
-_LT = "\x02"
-_GT = "\x03"
-_LBRACE = "\x15"
-_RBRACE = "\x16"
-# 数式マーカー: \x13LaTeX\x14 (voicevox.py の _MATH_START / _MATH_END)
-_MATH_SPAN = re.compile("\x13(.*?)\x14", re.DOTALL)
-# 句読点プレースホルダ → 元の文字 (voicevox.py の _PUNCT_PH の逆)
-_PUNCT_PH_RESTORE = {
-    "\x04": "。", "\x05": "．", "\x06": ".",
-    "\x07": "、", "\x10": "，", "\x11": ",",
-}
+# 数式マーカーで囲まれた LaTeX: \x13LaTeX\x14
+_MATH_SPAN = re.compile(f"{_MATH_START}(.*?){_MATH_END}", re.DOTALL)
+# 句読点プレースホルダ → 元の文字
+_PUNCT_PH_RESTORE = {ph: ch for ch, ph in _PUNCT_PH.items()}
 
 # 句読点置換: ラベル → 実際の文字 (1文字のラベルはそのまま使用)
 _PUNCT_CHAR_MAP = {

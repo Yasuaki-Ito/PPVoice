@@ -20,7 +20,9 @@ except ImportError:
 
 from pptx_reader import read_slides
 from pptx_writer import embed_audio, _extract_click_groups
-from tts.voicevox import VoicevoxEngine, _NEXT_TAG, _READING_PATTERN, _BRACE_PATTERN
+from notes import _BRACE_PATTERN, _NEXT_TAG, _READING_PATTERN
+from tts.openai_compat import OpenAICompatEngine
+from tts.voicevox import VoicevoxEngine
 from version import __version__
 
 # 字幕テキスト中のプレースホルダ → ログ表示用の文字
@@ -76,6 +78,10 @@ else:
 
 
 class App(_AppBase):
+    # TTS エンジン: 内部キー → 表示名
+    _ENGINE_LABELS = {"voicevox": "VOICEVOX", "openai": "OpenAI互換 (Kokoro等)"}
+    _DEFAULT_URLS = {"voicevox": "http://localhost:50021", "openai": "http://localhost:8880/v1"}
+
     def __init__(self):
         super().__init__()
         self.title(f"PPVoice v{__version__}")
@@ -90,7 +96,11 @@ class App(_AppBase):
                 break
 
         self._speakers_cache: list[dict] = []
-        self._speaker_map: dict[str, int] = {}
+        # 話者 (VOICEVOX: スタイルラベル → スタイルID, OpenAI互換: 声の名前 → 声の名前)
+        self._speaker_map: dict[str, int | str] = {}
+        self._engine = "voicevox"
+        # エンジンごとの URL (切り替え時に入力中の値を覚えておく)
+        self._engine_urls = dict(self._DEFAULT_URLS)
         self._styles_by_speaker: dict[str, list[tuple[str, int]]] = {}
         self._running = False
         self._cancel_event = threading.Event()
@@ -217,27 +227,50 @@ class App(_AppBase):
 
         self._section_header(sec, "音声設定")
 
-        # VOICEVOX URL
+        # エンジン選択
         row = ctk.CTkFrame(sec, fg_color="transparent")
         row.pack(fill="x", padx=14, pady=3)
-        ctk.CTkLabel(row, text="VOICEVOX URL", width=120, anchor="w").pack(side="left")
-        self.url_var = ctk.StringVar(value="http://localhost:50021")
+        ctk.CTkLabel(row, text="エンジン", width=120, anchor="w").pack(side="left")
+        self.engine_selector = ctk.CTkSegmentedButton(
+            row, values=list(self._ENGINE_LABELS.values()), command=self._on_engine_selected,
+        )
+        self.engine_selector.set(self._ENGINE_LABELS[self._engine])
+        self.engine_selector.pack(side="left", padx=(4, 0))
+
+        # URL
+        row = ctk.CTkFrame(sec, fg_color="transparent")
+        row.pack(fill="x", padx=14, pady=3)
+        self.url_label = ctk.CTkLabel(row, text="VOICEVOX URL", width=120, anchor="w")
+        self.url_label.pack(side="left")
+        self.url_var = ctk.StringVar(value=self._engine_urls[self._engine])
         ctk.CTkEntry(row, textvariable=self.url_var).pack(side="left", fill="x", expand=True, padx=(4, 6))
         self.fetch_btn = ctk.CTkButton(row, text="話者取得", width=80, command=self._fetch_speakers)
         self.fetch_btn.pack(side="left")
 
+        # モデル・APIキー (OpenAI互換のみ表示)
+        self.openai_row = ctk.CTkFrame(sec, fg_color="transparent")
+        ctk.CTkLabel(self.openai_row, text="モデル", width=120, anchor="w").pack(side="left")
+        self.model_var = ctk.StringVar(value="kokoro")
+        ctk.CTkEntry(self.openai_row, textvariable=self.model_var, width=160).pack(side="left", padx=(4, 16))
+        ctk.CTkLabel(self.openai_row, text="APIキー", anchor="w").pack(side="left")
+        # APIキーは PPTX に残るため <config> には保存しない (環境変数 OPENAI_API_KEY を初期値にする)
+        self.api_key_var = ctk.StringVar(value=os.environ.get("OPENAI_API_KEY", ""))
+        ctk.CTkEntry(self.openai_row, textvariable=self.api_key_var, show="*",
+                     placeholder_text="(不要なら空欄)").pack(side="left", fill="x", expand=True, padx=(4, 0))
+
         # 話者選択
-        row = ctk.CTkFrame(sec, fg_color="transparent")
+        self.speaker_row = row = ctk.CTkFrame(sec, fg_color="transparent")
         row.pack(fill="x", padx=14, pady=3)
-        ctk.CTkLabel(row, text="話者", width=120, anchor="w").pack(side="left")
+        self.speaker_label = ctk.CTkLabel(row, text="話者", width=120, anchor="w")
+        self.speaker_label.pack(side="left")
         self.speaker_menu = ctk.CTkComboBox(
             row, values=["(話者取得を押してください)"],
             command=self._on_speaker_changed, state="readonly",
         )
         self.speaker_menu.pack(side="left", fill="x", expand=True, padx=(4, 0))
 
-        # スタイル選択
-        row = ctk.CTkFrame(sec, fg_color="transparent")
+        # スタイル選択 (VOICEVOXのみ表示)
+        self.style_row = row = ctk.CTkFrame(sec, fg_color="transparent")
         row.pack(fill="x", padx=14, pady=3)
         ctk.CTkLabel(row, text="スタイル", width=120, anchor="w").pack(side="left")
         self.style_speaker_menu = ctk.CTkComboBox(
@@ -257,8 +290,8 @@ class App(_AppBase):
         self.speed_label.pack(side="left")
         self.speed_var.trace_add("write", lambda *_: self.speed_label.configure(text=f"{self.speed_var.get():.1f}"))
 
-        # ピッチ
-        row = ctk.CTkFrame(sec, fg_color="transparent")
+        # ピッチ (VOICEVOXのみ表示)
+        self.pitch_row = row = ctk.CTkFrame(sec, fg_color="transparent")
         row.pack(fill="x", padx=14, pady=3)
         ctk.CTkLabel(row, text="ピッチ", width=120, anchor="w").pack(side="left")
         self.pitch_var = ctk.DoubleVar(value=0.0)
@@ -269,8 +302,8 @@ class App(_AppBase):
         self.pitch_label.pack(side="left")
         self.pitch_var.trace_add("write", lambda *_: self.pitch_label.configure(text=f"{self.pitch_var.get():.2f}"))
 
-        # 抑揚
-        row = ctk.CTkFrame(sec, fg_color="transparent")
+        # 抑揚 (VOICEVOXのみ表示)
+        self.intonation_row = row = ctk.CTkFrame(sec, fg_color="transparent")
         row.pack(fill="x", padx=14, pady=3)
         ctk.CTkLabel(row, text="抑揚", width=120, anchor="w").pack(side="left")
         self.intonation_var = ctk.DoubleVar(value=1.0)
@@ -282,7 +315,7 @@ class App(_AppBase):
         self.intonation_var.trace_add("write", lambda *_: self.intonation_label.configure(text=f"{self.intonation_var.get():.1f}"))
 
         # 音量
-        row = ctk.CTkFrame(sec, fg_color="transparent")
+        self.volume_row = row = ctk.CTkFrame(sec, fg_color="transparent")
         row.pack(fill="x", padx=14, pady=3)
         ctk.CTkLabel(row, text="音量", width=120, anchor="w").pack(side="left")
         self.volume_var = ctk.DoubleVar(value=1.0)
@@ -307,8 +340,8 @@ class App(_AppBase):
         )
         self.test_play_btn.pack(side="left", anchor="n")
 
-        # VOICEVOX 利用規約リンク
-        row = ctk.CTkFrame(sec, fg_color="transparent")
+        # VOICEVOX 利用規約リンク (VOICEVOXのみ表示)
+        self.voicevox_note_row = row = ctk.CTkFrame(sec, fg_color="transparent")
         row.pack(fill="x", padx=14, pady=(0, 3))
         # 120px のスペーサーでラベル列と揃える
         ctk.CTkLabel(row, text="", width=120).pack(side="left")
@@ -323,14 +356,18 @@ class App(_AppBase):
         note.bind("<Button-1>", lambda e: __import__("webbrowser").open("https://voicevox.hiroshiba.jp/"))
 
         # 文の区切り・末尾の余白
-        row = ctk.CTkFrame(sec, fg_color="transparent")
+        self.pause_row = row = ctk.CTkFrame(sec, fg_color="transparent")
         row.pack(fill="x", padx=14, pady=(3, 12))
         ctk.CTkLabel(row, text="文の区切り (秒)", width=120, anchor="w").pack(side="left")
         self.pause_var = ctk.DoubleVar(value=0.5)
         ctk.CTkEntry(row, textvariable=self.pause_var, width=50).pack(side="left", padx=(4, 16))
         ctk.CTkLabel(row, text="末尾の余白 (秒)", width=120, anchor="w").pack(side="left")
         self.end_pause_var = ctk.DoubleVar(value=2.0)
-        ctk.CTkEntry(row, textvariable=self.end_pause_var, width=50).pack(side="left", padx=(4, 0))
+        ctk.CTkEntry(row, textvariable=self.end_pause_var, width=50).pack(side="left", padx=(4, 16))
+        # 行の途中の文末 (. ! ?) でも区切る (英語のように改行なしの段落で書かれたノート向け)
+        # 初期値はエンジンに合わせる (VOICEVOX: オフ, OpenAI互換: オン)
+        self.split_sentence_var = ctk.BooleanVar(value=self._engine != "voicevox")
+        ctk.CTkCheckBox(row, text="文末 (. ! ?) でも区切る", variable=self.split_sentence_var).pack(side="left")
 
 
     # --- 字幕設定 ---
@@ -684,6 +721,81 @@ class App(_AppBase):
         if path:
             self.output_var.set(path)
 
+    # ------------------------------------------------------------------
+    # エンジン切り替え
+    # ------------------------------------------------------------------
+
+    def _on_engine_selected(self, label: str):
+        engine = next(k for k, v in self._ENGINE_LABELS.items() if v == label)
+        self._set_engine(engine)
+
+    def _set_engine(self, engine: str):
+        """TTS エンジンを切り替え、エンジンに応じて表示する項目を変える。"""
+        if engine not in self._ENGINE_LABELS:
+            return
+        self.engine_selector.set(self._ENGINE_LABELS[engine])
+        if engine == self._engine:
+            return
+        # URL はエンジンごとに覚えておく
+        self._engine_urls[self._engine] = self.url_var.get().strip()
+        self._engine = engine
+        self.url_var.set(self._engine_urls[engine])
+
+        is_voicevox = engine == "voicevox"
+        self.url_label.configure(text="VOICEVOX URL" if is_voicevox else "URL")
+        self.speaker_label.configure(text="話者" if is_voicevox else "声")
+        self.fetch_btn.configure(text="話者取得" if is_voicevox else "声を取得")
+        if is_voicevox:
+            self.openai_row.pack_forget()
+            self.style_row.pack(fill="x", padx=14, pady=3, after=self.speaker_row)
+            self.voicevox_note_row.pack(fill="x", padx=14, pady=(0, 3), before=self.pause_row)
+            # ピッチ・抑揚は VOICEVOX 専用
+            self.pitch_row.pack(fill="x", padx=14, pady=3, before=self.volume_row)
+            self.intonation_row.pack(fill="x", padx=14, pady=3, before=self.volume_row)
+        else:
+            self.openai_row.pack(fill="x", padx=14, pady=3, before=self.speaker_row)
+            self.style_row.pack_forget()
+            self.voicevox_note_row.pack_forget()
+            self.pitch_row.pack_forget()
+            self.intonation_row.pack_forget()
+
+        # 文末で区切るかはエンジンの想定言語に合わせる (<config> の split_sentences で上書き可)
+        self.split_sentence_var.set(not is_voicevox)
+
+        # 話者一覧はエンジンごとに取り直す
+        self._speaker_map.clear()
+        self._styles_by_speaker = {}
+        self.speaker_menu.configure(values=["(取得ボタンを押してください)"])
+        self.speaker_menu.set("(取得ボタンを押してください)")
+        self.style_speaker_menu.configure(values=["---"])
+        self.style_speaker_menu.set("---")
+        self._update_run_btn()
+
+    def _create_engine(self, pause_sec: float = 0.5):
+        """現在の GUI 設定から TTS エンジンを作成する。"""
+        url = self.url_var.get().strip()
+        speed = self.speed_var.get()
+        volume = self.volume_var.get()
+        split = self.split_sentence_var.get()
+        if self._engine == "openai":
+            return OpenAICompatEngine(
+                voice=self.speaker_menu.get(), base_url=url,
+                model=self.model_var.get().strip() or "kokoro", api_key=self.api_key_var.get().strip(),
+                pause_sec=pause_sec, speed_scale=speed, volume_scale=volume, split_sentence_ends=split,
+            )
+        speaker_id = self._speaker_map.get(self.style_speaker_menu.get(), 1)
+        return VoicevoxEngine(
+            speaker_id=speaker_id, base_url=url, pause_sec=pause_sec,
+            speed_scale=speed, pitch_scale=self.pitch_var.get(),
+            intonation_scale=self.intonation_var.get(), volume_scale=volume, split_sentence_ends=split,
+        )
+
+    def _speaker_description(self) -> str:
+        """ログ表示用の話者の説明。"""
+        if self._engine == "openai":
+            return f"voice={self.speaker_menu.get()}, model={self.model_var.get().strip()}"
+        return f"speaker={self._speaker_map.get(self.style_speaker_menu.get(), 1)}"
+
     # 話者取得のタイムアウト (接続, 読み込み) 秒
     _FETCH_TIMEOUT = (5, 30)
 
@@ -691,12 +803,20 @@ class App(_AppBase):
         """話者一覧を別スレッドで取得する (取得中も GUI が固まらないように)。"""
         self._log_clear()
         url = self.url_var.get().strip().rstrip("/")
-        self._log(f"VOICEVOXエンジン ({url}) に接続中...\n")
+        name = "VOICEVOXエンジン" if self._engine == "voicevox" else "TTSサーバ"
+        self._log(f"{name} ({url}) に接続中...\n")
         self.fetch_btn.configure(text="取得中...", state="disabled")
-        threading.Thread(target=self._fetch_speakers_worker, args=(url,), daemon=True).start()
+        engine = self._engine
+        api_key = self.api_key_var.get().strip()
+        threading.Thread(target=self._fetch_speakers_worker, args=(url, engine, api_key), daemon=True).start()
 
-    def _fetch_speakers_worker(self, url: str):
+    def _fetch_speakers_worker(self, url: str, engine: str = "voicevox", api_key: str = ""):
         try:
+            if engine == "openai":
+                voices = OpenAICompatEngine(voice="", base_url=url, api_key=api_key).list_voices(
+                    timeout=self._FETCH_TIMEOUT)
+                self.after(0, self._on_voices_fetched, engine, voices)
+                return
             speakers = VoicevoxEngine(base_url=url).list_speakers(timeout=self._FETCH_TIMEOUT)
         except requests.exceptions.ConnectTimeout:
             msg = f"話者取得失敗: {url} に接続できませんでした (タイムアウト {self._FETCH_TIMEOUT[0]}秒)。"
@@ -709,15 +829,36 @@ class App(_AppBase):
         else:
             self.after(0, self._on_speakers_fetched, speakers)
             return
+        name = "VOICEVOXエンジン" if engine == "voicevox" else "TTSサーバ"
         self.after(0, self._on_speakers_fetch_failed,
-                   msg + "\nVOICEVOXエンジンが起動しているか、URLが正しいか確認してください。\n")
+                   msg + f"\n{name}が起動しているか、URLが正しいか確認してください。\n")
+
+    def _reset_fetch_btn(self):
+        self.fetch_btn.configure(text="話者取得" if self._engine == "voicevox" else "声を取得", state="normal")
 
     def _on_speakers_fetch_failed(self, msg: str):
-        self.fetch_btn.configure(text="話者取得", state="normal")
+        self._reset_fetch_btn()
         self._log(msg)
 
+    def _on_voices_fetched(self, engine: str, voices: list[str]):
+        """OpenAI互換サーバの声一覧を反映する。"""
+        self._reset_fetch_btn()
+        if engine != self._engine:
+            return  # 取得中にエンジンが切り替えられた
+        self._speaker_map = {v: v for v in voices}
+        if voices:
+            self.speaker_menu.configure(values=voices)
+            self.speaker_menu.set(voices[0])
+            self._log(f"{len(voices)} 個の声を取得しました。\n")
+            self._apply_pending_speaker()
+        else:
+            self._log("声が見つかりませんでした。\n")
+        self._update_run_btn()
+
     def _on_speakers_fetched(self, speakers: list[dict]):
-        self.fetch_btn.configure(text="話者取得", state="normal")
+        self._reset_fetch_btn()
+        if self._engine != "voicevox":
+            return  # 取得中にエンジンが切り替えられた
         self._speakers_cache = speakers
         self._speaker_map.clear()
         # 話者名 → [(スタイルラベル, ID), ...] のマッピング
@@ -747,6 +888,8 @@ class App(_AppBase):
         self._update_run_btn()
 
     def _on_speaker_changed(self, speaker_name: str):
+        if self._engine != "voicevox":
+            return  # OpenAI互換は声の選択だけでスタイルはない
         # "話者名 (N)" → "話者名" に変換
         name = speaker_name.rsplit(" (", 1)[0] if " (" in speaker_name else speaker_name
         styles = self._styles_by_speaker.get(name, [])
@@ -798,7 +941,7 @@ class App(_AppBase):
             elif n_clicks > n_next and n_next > 0:
                 status = f" ← 余り {n_clicks - n_next} グループ"
             elif n_clicks > 0 and n_next == 0:
-                status = " ← <next> なし (アニメ削除)"
+                status = " ← <next> なし (すべて未指定アニメとして扱う)"
             self._log(f"  スライド {si.index + 1}: アニメ={n_clicks}, <next>={n_next}{status}\n")
         self._log("---\n")
 
@@ -821,27 +964,18 @@ class App(_AppBase):
             self._log("先に話者を取得してください。\n")
             return
 
-        style_label = self.style_speaker_menu.get()
-        speaker_id = self._speaker_map.get(style_label, 1)
-        url = self.url_var.get().strip()
-        speed = self.speed_var.get()
-        pitch = self.pitch_var.get()
-        intonation = self.intonation_var.get()
-        volume = self.volume_var.get()
+        engine = self._create_engine()
 
         self.test_play_btn.configure(text="合成中...", state="disabled")
         thread = threading.Thread(
             target=self._test_play_worker,
-            args=(text, speaker_id, url, speed, pitch, intonation, volume),
+            args=(text, engine),
             daemon=True,
         )
         thread.start()
 
-    def _test_play_worker(self, text, speaker_id, url, speed, pitch, intonation, volume):
+    def _test_play_worker(self, text, engine):
         try:
-            engine = VoicevoxEngine(speaker_id=speaker_id, base_url=url,
-                                    speed_scale=speed, pitch_scale=pitch,
-                                    intonation_scale=intonation, volume_scale=volume)
             wav, timings, _ = engine.synthesize_with_timings(text)
             self.after(0, lambda: self.test_play_btn.configure(text="■ 停止", state="normal"))
 
@@ -860,7 +994,8 @@ class App(_AppBase):
             self._test_stop = True
         except Exception as e:
             self._test_stop = True
-            self.after(0, lambda: self._log(f"テスト再生エラー: {e}\n"))
+            # except を抜けると e は消えるため、値を先に束縛する
+            self.after(0, lambda msg=str(e): self._log(f"テスト再生エラー: {msg}\n"))
         finally:
             self.after(0, self._test_play_reset)
 
@@ -907,13 +1042,18 @@ class App(_AppBase):
 
     def _apply_config(self, config: dict):
         """解析済み config dict を GUI ウィジェットに適用する。"""
+        # エンジンは話者より先に切り替える (切り替えると話者一覧がリセットされるため)
+        if "engine" in config:
+            self._set_engine(config["engine"].lower())
+        if "model" in config:
+            self.model_var.set(config["model"])
         # 話者は pending に保存 (一覧取得後に適用)
         if "speaker" in config:
             self._pending_speaker = config["speaker"]
         if "style" in config:
             self._pending_style = config["style"]
         # すでに話者一覧がある場合は即適用
-        if self._styles_by_speaker:
+        if self._speaker_map:
             self._apply_pending_speaker()
 
         # --- 音声設定 ---
@@ -929,6 +1069,8 @@ class App(_AppBase):
             self.volume_var.set(float(config["volume"]))
         if "end_pause" in config:
             self.end_pause_var.set(float(config["end_pause"]))
+        if "split_sentences" in config:
+            self.split_sentence_var.set(config["split_sentences"].lower() in ("on", "true", "1"))
         if "auto_next" in config:
             self.auto_next_var.set(float(config["auto_next"]))
         if "auto_next_enabled" in config:
@@ -1022,12 +1164,17 @@ class App(_AppBase):
             else:
                 parts.append(f"{key}={s}")
 
-        # 話者
+        # エンジン・話者 (APIキーは PPTX に残るため保存しない)
+        _add("engine", self._engine)
         speaker_display = self.speaker_menu.get()
-        if speaker_display and " (" in speaker_display:
+        if self._engine == "openai":
+            _add("model", self.model_var.get().strip())
+            if speaker_display in self._speaker_map:
+                _add("speaker", speaker_display)
+        elif speaker_display and " (" in speaker_display:
             _add("speaker", speaker_display.rsplit(" (", 1)[0])
         style_display = self.style_speaker_menu.get()
-        if style_display and " (ID=" in style_display:
+        if self._engine == "voicevox" and style_display and " (ID=" in style_display:
             _add("style", style_display.rsplit(" (ID=", 1)[0])
 
         # 音声
@@ -1037,6 +1184,7 @@ class App(_AppBase):
         _add("intonation", f"{self.intonation_var.get():.1f}")
         _add("volume", f"{self.volume_var.get():.1f}")
         _add("end_pause", f"{self.end_pause_var.get():.1f}")
+        _add("split_sentences", "on" if self.split_sentence_var.get() else "off")
         _add("auto_next", f"{self.auto_next_var.get():.1f}")
         _add("auto_next_enabled", "on" if self.auto_next_enabled_var.get() else "off")
 
@@ -1272,16 +1420,9 @@ class App(_AppBase):
         if not output_path:
             output_path = base_name + "_speech.pptx"
 
-        # 話者ID
-        style_label = self.style_speaker_menu.get()
-        speaker_id = self._speaker_map.get(style_label, 1)
-
-        url = self.url_var.get().strip()
         pause_sec = self.pause_var.get()
-        speed_scale = self.speed_var.get()
-        pitch_scale = self.pitch_var.get()
-        intonation_scale = self.intonation_var.get()
-        volume_scale = self.volume_var.get()
+        engine = self._create_engine(pause_sec=pause_sec)
+        speaker_desc = self._speaker_description()
         end_pause_sec = self.end_pause_var.get()
         use_subtitle = self.subtitle_var.get()
         sub_style = self.style_var.get()
@@ -1325,10 +1466,7 @@ class App(_AppBase):
 
         # 音声合成
         auto_next_sec = self.auto_next_var.get()
-        print(f"\n音声を合成しています (speaker={speaker_id}, pause={pause_sec}s)...")
-        engine = VoicevoxEngine(speaker_id=speaker_id, base_url=url, pause_sec=pause_sec,
-                                speed_scale=speed_scale, pitch_scale=pitch_scale,
-                                intonation_scale=intonation_scale, volume_scale=volume_scale)
+        print(f"\n音声を合成しています ({speaker_desc}, pause={pause_sec}s)...")
 
         slide_audio = []
         slide_timings = {}

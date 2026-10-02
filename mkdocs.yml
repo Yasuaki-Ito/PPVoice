@@ -1,0 +1,84 @@
+site_name: PPVoice
+site_url: https://yasuaki-ito.github.io/PPVoice/
+site_description: PowerPoint のノート欄から音声を合成し、音声付き PPTX を生成するツール
+repo_url: https://github.com/Yasuaki-Ito/PPVoice
+repo_name: Yasuaki-Ito/PPVoice
+edit_uri: ""
+docs_dir: docs
+
+theme:
+  name: material
+  language: ja
+  features:
+    - navigation.top
+    - navigation.footer
+    - search.highlight
+    - content.code.copy
+    - toc.follow
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-night
+        name: ダークモードに切り替え
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/weather-sunny
+        name: ライトモードに切り替え
+  icon:
+    repo: fontawesome/brands/github
+
+plugins:
+  - search:
+      lang:
+        - ja
+        - en
+  - i18n:
+      docs_structure: suffix
+      fallback_to_default: true
+      reconfigure_material: true
+      reconfigure_search: true
+      languages:
+        - locale: ja
+          default: true
+          name: 日本語
+          build: true
+        - locale: en
+          name: English
+          build: true
+          site_description: Generate narrated PowerPoint slides from speaker notes
+          # 英語のドキュメントは準備中のため、当面はホームのみ
+          nav:
+            - Home: index.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+      # 日本語の見出しもアンカーに残す
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight
+  - pymdownx.inlinehilite
+
+nav:
+  - ホーム: index.md
+  - はじめかた: getting-started.md
+  - ノートの書き方: notes.md
+  - アニメーション連携: animation.md
+  - 字幕の設定: subtitles.md
+  - 音声合成エンジン: engines.md
+  - 設定の保存: config.md
+  - 動画への変換: video.md
+  - よくある質問: faq.md

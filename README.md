@@ -2,11 +2,12 @@
 
 PowerPointのノート欄から音声を自動合成し、**音声付きPPTX**を生成するツールです。
 
-音声合成には [VOICEVOX](https://voicevox.hiroshiba.jp/) を使用します。
+音声合成には [VOICEVOX](https://voicevox.hiroshiba.jp/) のほか、[Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) などの OpenAI 互換 TTS サーバを使用できます（英語の音声にも対応）。
 
 ## 主な機能
 
 - **音声付きPPTX生成** — スライドごとにノートを読み上げる音声を埋め込み、自動再生を設定
+- **音声合成エンジンの選択** — VOICEVOX と、Kokoro-FastAPI などの OpenAI 互換 TTS（英語など多言語）を切り替え可能
 - **字幕** — 読み上げテキストをスライド上に字幕として表示（タイミング同期）。字幕スタイルは縁取り（輪郭・ぼかし）・半透明背景から選択可能。太字・斜体・下線のデフォルト設定や句読点の置換にも対応
 - **アニメーション連携** — `<next>` タグで音声タイムラインに合わせてクリックアニメーションを自動発火
 - **テスト再生** — GUI上で音声と字幕をプレビュー確認
@@ -25,7 +26,10 @@ PPVoice で生成した音声付きスライドの紹介動画です（クリッ
 
 ## 必要なもの
 
-- [VOICEVOX Engine](https://voicevox.hiroshiba.jp/) (ローカルで起動しておく)
+次のどちらかの音声合成エンジン（ローカルで起動しておく）
+
+- [VOICEVOX Engine](https://voicevox.hiroshiba.jp/)（日本語）
+- [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) などの OpenAI 互換 TTS サーバ（英語など）→ [OpenAI互換エンジン](#openai互換エンジン-kokoro-fastapi-など)
 
 > **注意**: VOICEVOXのキャラクターにはそれぞれ利用規約があります。使用前に [VOICEVOX公式サイト](https://voicevox.hiroshiba.jp/) で確認してください。
 
@@ -42,12 +46,15 @@ VOICEVOX互換APIを持つ [SelfVox](https://github.com/Yasuaki-Ito/selfvox) も
 PPVoice はスライドの **ノート欄** に書かれたテキストを読み上げます。PowerPoint でスライド下部の「ノートを入力」欄に、読み上げたい内容を記入してください。
 
 - ノートが空のスライドは音声なし（スキップ）になります
-- テキストは改行ごとに分割されて合成されます
+- テキストは改行ごとに分割されて合成されます（字幕も改行ごとに切り替わります）
 - 改行がなければノート全体が1つの音声チャンクになります
+- 英語のように改行なしの段落で書く場合は、GUI の「文末 (. ! ?) でも区切る」をオンにすると、文ごとに分割されます（`e.g.` や `Dr.` などの略語では区切りません）
 
-### 2. VOICEVOX Engine を起動する
+### 2. 音声合成エンジンを起動する
 
 PPVoice を使う前に、[VOICEVOX](https://voicevox.hiroshiba.jp/) を起動しておいてください。デフォルトで `http://localhost:50021` に接続します。
+
+Kokoro-FastAPI などを使う場合は、[OpenAI互換エンジン](#openai互換エンジン-kokoro-fastapi-など) を参照してください。
 
 ### 3. PPVoice で音声を生成する
 
@@ -63,6 +70,37 @@ PPVoice で生成した音声付きPPTXは、PowerPoint の標準機能で動画
 4. **ビデオの作成** をクリック
 
 音声とスライド切り替えのタイミングが保持されたMP4が生成されます。
+
+## OpenAI互換エンジン (Kokoro-FastAPI など)
+
+GUI の「エンジン」で **OpenAI互換 (Kokoro等)** を選ぶと、OpenAI の音声合成 API（`/v1/audio/speech`）と互換のサーバを使って合成します。英語の資料を作る場合などに使えます。
+
+対応するサーバの例:
+
+- [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI) — 軽量な TTS モデル Kokoro をローカルで動かすサーバ（英語・日本語など）
+- [OpenAI の音声合成 API](https://platform.openai.com/docs/guides/text-to-speech)（有料・APIキーが必要）
+
+> **注意**: Kokoro-FastAPI などのサーバの導入・動作は、PPVoice のサポート対象外です。インストールや起動の方法は、各プロジェクトの案内に従ってください。
+>
+> PPVoice の「声を取得」で声の一覧が表示されれば、PPVoice とサーバの接続は正常です。表示されない場合や、合成時にサーバ側のエラーが出る場合は、サーバの設定・起動状況を確認してください。
+
+### PPVoice での設定
+
+1. 「エンジン」で **OpenAI互換 (Kokoro等)** を選ぶ
+2. URL を入力する（`/v1` まで含めます。Kokoro-FastAPI の初期設定では `http://localhost:8880/v1`、OpenAI の API では `https://api.openai.com/v1`）
+3. 「声を取得」を押し、「声」を選ぶ（Kokoro-FastAPI では `af_heart` など）
+
+| 項目 | 説明 |
+|---|---|
+| モデル | Kokoro-FastAPI は `kokoro`。OpenAI の API を使う場合は `tts-1` や `gpt-4o-mini-tts` など |
+| APIキー | ローカルのサーバでは不要（空欄）。OpenAI の API を使う場合に入力します（有料）。環境変数 `OPENAI_API_KEY` があれば初期値になります。PPTX には保存されません |
+
+### VOICEVOX との違い
+
+- `<speed>` と `<volume>`、速度・音量のスライダーは使えます
+- `<pitch>`、`<intonation>`、アクセント指定 `{…|…|N}` は使えません（ノートに書かれていても無視し、ログに表示します）
+- 読み指定 `{表示|読み}` はそのまま使えます（例: `{LaTeX|lay-tech}`、`{PPTX|P P T X}`）
+- 「文末 (. ! ?) でも区切る」は、OpenAI互換を選ぶと初期状態でオンになります
 
 ## 読み指定の記法
 
@@ -184,6 +222,12 @@ GUI の「設定保存」ボタンを押すと、現在の話者・字幕スタ�
 
 ```
 <config speaker="ずんだもん" style="ノーマル" pause=0.5 fontsize=18 subtitle_style=outline bold=off italic=off underline=off math_bold=on>
+```
+
+OpenAI互換エンジンの場合は、`engine` と `model` も保存されます（APIキーは保存されません）。
+
+```
+<config engine=openai model=kokoro speaker=af_heart split_sentences=on>
 ```
 
 必要なキーだけを書けば部分的に設定を上書きできます。複数のスライドにタグがある場合は後のタグが優先されます。

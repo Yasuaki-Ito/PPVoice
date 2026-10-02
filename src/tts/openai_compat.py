@@ -7,12 +7,14 @@ WAV で受け取るとストリーミング時にヘッダの長さが不正確�
 
 import array
 import io
+import re
 import sys
 import wave
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
+from i18n import t
 from notes import Sentence
 
 from .base import TTSEngine
@@ -24,6 +26,43 @@ PCM_CHANNELS = 1
 
 # /audio/voices が使えないサーバ (OpenAI 本家など) 向けの既定の声
 DEFAULT_OPENAI_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"]
+
+
+# Kokoro の声の ID: 言語1文字 + 性別 (f/m) + "_" + 名前 (例: af_heart = アメリカ英語・女性の heart)
+_KOKORO_VOICE = re.compile(r"^([a-z])([fm])_(.+)$")
+# Kokoro の言語の記号 (a: アメリカ英語, b: イギリス英語, ...)
+KOKORO_LANG_CODES = ("a", "b", "e", "f", "h", "i", "j", "p", "z")
+
+
+def group_voices(voices: list[str]) -> list[tuple[tuple[str, str] | None, list[str]]] | None:
+    """声の一覧を Kokoro の命名規則で (言語, 性別) ごとにまとめる。
+
+    規則に合う声が1つもなければ None (グループ分けしない)。
+    規則に合わない声は最後の (None, [...]) にまとめる。グループは最初に現れた順。
+
+    Returns:
+        [((言語の記号, 性別の記号), [声の ID, ...]), ..., (None, [規則に合わない声の ID, ...])]
+    """
+    groups: dict[tuple[str, str], list[str]] = {}
+    others: list[str] = []
+    for v in voices:
+        m = _KOKORO_VOICE.match(v)
+        if m:
+            groups.setdefault((m.group(1), m.group(2)), []).append(v)
+        else:
+            others.append(v)
+    if not groups:
+        return None
+    result: list[tuple[tuple[str, str] | None, list[str]]] = list(groups.items())
+    if others:
+        result.append((None, others))
+    return result
+
+
+def voice_short_name(voice: str) -> str:
+    """Kokoro の声の ID から名前の部分を返す (af_heart → heart)。規則に合わなければそのまま。"""
+    m = _KOKORO_VOICE.match(voice)
+    return m.group(3) if m else voice
 
 
 def _pcm_to_wav(pcm: bytes) -> bytes:
@@ -48,6 +87,10 @@ def _scale_pcm(pcm: bytes, factor: float) -> bytes:
     if sys.byteorder != "little":
         samples.byteswap()
     return samples.tobytes()
+
+
+class TTSServerError(Exception):
+    """TTS サーバがエラーを返した (メッセージは利用者向けに整形済み)。"""
 
 
 class OpenAICompatEngine(TTSEngine):
@@ -92,9 +135,29 @@ class OpenAICompatEngine(TTSEngine):
             },
             timeout=self.timeout,
         )
-        resp.raise_for_status()
+        if not resp.ok:
+            raise TTSServerError(self._error_message(resp, s))
         volume = s.volume if s.volume is not None else self.volume_scale
         return _pcm_to_wav(_scale_pcm(resp.content, volume))
+
+    @staticmethod
+    def _error_message(resp: requests.Response, s: Sentence) -> str:
+        """サーバのエラー応答から、利用者向けのメッセージを作る。
+
+        応答の形式: FastAPI {"detail": {"message": ...}} / OpenAI {"error": {"message": ...}}
+        原因の詳細 (例: Kokoro の日本語の声で MeCab の辞書がない) はサーバのログにしか出ないため、
+        手がかりを添える。
+        """
+        try:
+            data = resp.json()
+            detail = data.get("detail", data.get("error", data)) if isinstance(data, dict) else data
+            message = str(detail.get("message") or detail) if isinstance(detail, dict) else str(detail)
+        except ValueError:
+            message = resp.text.strip()[:300] or resp.reason
+        text = t("log_server_error", status=resp.status_code, message=message, text=s.reading)
+        if "speakable" in message.lower():
+            text += t("hint_no_speakable")
+        return text + t("hint_server_log")
 
     def synthesize_sentences(self, sentences: list[Sentence], on_done=None) -> list[bytes]:
         self._warn_unsupported(sentences)
@@ -115,9 +178,9 @@ class OpenAICompatEngine(TTSEngine):
         if any(s.intonation is not None for s in sentences):
             used.append("<intonation>")
         if any(s.accents for s in sentences):
-            used.append("アクセント指定 {…|…|N}")
+            used.append(t("accent_tag"))
         if used:
-            print(f"[PPVoice] このエンジンでは {', '.join(used)} は使えないため無視します")
+            print(t("log_unsupported", items=", ".join(used)))
 
     def list_voices(self, timeout: float | tuple[float, float] | None = None) -> list[str]:
         """利用できる声の一覧を返す。

@@ -14,12 +14,13 @@ PowerPoint のノート欄から音声を自動で合成し、**音声付き PPT
 - **読み指定・数式** — `{PPTX|パワーポイント}` のように表示と読みを分けて書けます。`{$x^2$|エックスにじょう}` で字幕に数式を表示できます
 - **テスト再生** — 生成前に GUI 上で音声と字幕を確認できます
 - **設定の保存** — 話者や字幕の設定を PPTX のノートに保存し、次回開いたときに自動で復元します
+- **日本語・英語の画面** — 画面右上で表示言語を切り替えられます
 
 ## デモ
 
 PPVoice で作った紹介動画です（クリックで再生）。この動画自体も PPVoice で作成しています。
 
-[![紹介動画](https://img.youtube.com/vi/T7TKvOUW8BM/maxresdefault.jpg)](https://youtu.be/T7TKvOUW8BM)
+[![紹介動画](https://img.youtube.com/vi/9V2-6MLVjm8/sddefault.jpg)](https://youtu.be/9V2-6MLVjm8)
 
 ![PPVoice の画面](screenshot.png)
 

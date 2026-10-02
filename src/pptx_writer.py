@@ -17,6 +17,7 @@ from pptx.opc.package import Part
 from pptx.opc.packuri import PackURI
 from pptx.util import Emu, Pt
 
+from i18n import t
 # 字幕テキスト (notes._to_display の出力) に含まれるプレースホルダ
 from notes import _GT, _LBRACE, _LT, _MATH_END, _MATH_START, _PUNCT_PH, _RBRACE
 
@@ -298,7 +299,7 @@ def _replace_run_with_math(run_element, latex: str, bold: bool = False) -> bool:
     try:
         o_math = _latex_to_omml(latex)
     except Exception as e:
-        print(f"数式の変換に失敗しました (LaTeX のまま表示します): {latex} ({e})")
+        print(t("log_math_failed", latex=latex, e=e))
         return False
 
     rPr = run_element.find(_qn("a:rPr"))
@@ -951,4 +952,4 @@ def embed_audio(
         ts = datetime.now().strftime("%Y%m%d%H%M%S")
         output_path = f"{base}_{ts}{ext}"
         prs.save(output_path)
-    print(f"音声付きPPTX を保存しました: {output_path}")
+    print(t("log_saved", path=output_path))

@@ -6,6 +6,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
+from i18n import t
 from notes import Sentence
 
 from .base import TTSEngine
@@ -87,7 +88,7 @@ class VoicevoxEngine(TTSEngine):
                 except requests.RequestException:
                     continue
             if not recalculated:
-                print("[PPVoice] アクセント再計算に失敗しました (mora_pitch/mora_data 未対応)")
+                print(t("log_accent_failed"))
         return query
 
     def _multi_synthesis(self, queries: list[dict]) -> list[bytes]:

@@ -52,9 +52,16 @@ plugins:
           name: English
           build: true
           site_description: Generate narrated PowerPoint slides from speaker notes
-          # 英語のドキュメントは準備中のため、当面はホームのみ
           nav:
             - Home: index.md
+            - Getting started: getting-started.md
+            - Writing notes: notes.md
+            - Animation sync: animation.md
+            - Subtitles: subtitles.md
+            - TTS engines: engines.md
+            - Saving settings: config.md
+            - Export to video: video.md
+            - FAQ: faq.md
 
 markdown_extensions:
   - admonition

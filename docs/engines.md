@@ -36,7 +36,9 @@ OpenAI の音声合成 API（`/v1/audio/speech`）と互換のサーバを使っ
 2. URL を入力する（`/v1` まで含めます）
     - Kokoro-FastAPI の初期設定: `http://localhost:8880/v1`
     - OpenAI の API: `https://api.openai.com/v1`
-3. 「声を取得」を押し、「声」を選ぶ（Kokoro-FastAPI では `af_heart` など）
+3. 「声を取得」を押し、「声」を選ぶ
+
+Kokoro-FastAPI の声（`af_heart` のような名前）は、「言語・性別」（アメリカ英語・女性など）と「声」の2段階で選べます。それ以外のサーバでは、声の一覧から1つ選びます。
 
 | 項目 | 説明 |
 |---|---|

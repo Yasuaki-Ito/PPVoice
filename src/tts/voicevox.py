@@ -12,6 +12,15 @@ from notes import Sentence
 from .base import TTSEngine
 
 
+# アクセント指定の照合で「語 + 助詞」とみなす、句末の助詞 (VOICEVOX のモーラ表記)
+# を → ヲ/オ, は → ワ, へ → エ のように発音どおりの表記になる
+_PARTICLES = {
+    "ガ", "ノ", "ヲ", "オ", "ニ", "ワ", "ハ", "エ", "ヘ", "ト", "デ", "モ", "ヤ", "カ", "ネ", "ヨ", "ナ",
+    "カラ", "マデ", "ヨリ", "ダケ", "シカ", "ナド", "デワ", "ニワ", "トワ", "エワ", "カラワ", "マデワ",
+    "ニモ", "デモ", "トモ", "ノワ", "ノニ", "ノデ", "ダ", "デス", "ナノ", "ナノデ",
+}
+
+
 class VoicevoxEngine(TTSEngine):
     """VOICEVOXローカルエンジンを使った音声合成。
 
@@ -52,24 +61,37 @@ class VoicevoxEngine(TTSEngine):
         if not accents:
             return query
         phrases = query.get("accent_phrases", [])
+        texts = ["".join(m["text"] for m in phrase["moras"]) for phrase in phrases]
+
+        def find(katakana: str, start: int) -> int | None:
+            """start 以降で katakana に当たる句を探す。
+
+            1. 句が「語そのもの」か「語 + 助詞」(ファイルヲ, ハシワ, ファイルカラ など)
+            2. 見つからなければ前方一致 (2文字以上の語のみ。複合語に当たることがある)
+            """
+            candidates = range(start, len(phrases))
+            for i in candidates:
+                if texts[i].startswith(katakana) and (
+                        len(texts[i]) == len(katakana) or texts[i][len(katakana):] in _PARTICLES):
+                    return i
+            if len(katakana) >= 2:
+                for i in candidates:
+                    if texts[i].startswith(katakana):
+                        return i
+            return None
+
+        # 指定は文中の出現順に並んでいるので、前の指定が当たった句より後ろから探す
+        # (同じ語が2回出る文や、同じ読みの語が並ぶ文で、先頭の句にばかり当たらないように)。
+        # 順序どおりに見つからないとき (1つの句に2つの指定がある場合など) だけ文頭から探し直す
         modified = False
+        pos = 0
         for katakana, accent_pos in accents:
-            matched = None
-            # 完全一致を優先検索
-            for phrase in phrases:
-                mora_text = "".join(m["text"] for m in phrase["moras"])
-                if mora_text == katakana:
-                    matched = phrase
-                    break
-            # 見つからなければ前方一致 (助詞が結合されている場合: ハシヲ vs ハシ)
-            if matched is None:
-                for phrase in phrases:
-                    mora_text = "".join(m["text"] for m in phrase["moras"])
-                    if mora_text.startswith(katakana) and len(katakana) >= 2:
-                        matched = phrase
-                        break
-            if matched is not None:
-                matched["accent"] = accent_pos
+            i = find(katakana, pos)
+            if i is None:
+                i = find(katakana, 0)
+            if i is not None:
+                phrases[i]["accent"] = accent_pos
+                pos = i + 1
                 modified = True
         if modified:
             # mora_pitch でピッチ再計算 (失敗時は mora_data を試す)

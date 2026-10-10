@@ -6,7 +6,7 @@
 - A TTS engine (one of the following, running at the same time as PPVoice)
     - [VOICEVOX](https://voicevox.hiroshiba.jp/) (Japanese)
     - An OpenAI-compatible TTS server such as Kokoro-FastAPI (English and more) → [TTS engines](engines.md#openai-compatible-engine)
-- PowerPoint, if you want to export a video
+- PowerPoint (to write the notes, play the generated PPTX as a slide show, and export a video. PPVoice itself does not use PowerPoint to generate the file)
 
 ## Installation
 

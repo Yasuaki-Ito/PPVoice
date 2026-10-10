@@ -15,6 +15,7 @@ _lang = "ja"
 
 STRINGS: dict[str, tuple[str, str]] = {
     # --- 共通 ---
+    "link_docs": ("ドキュメント", "Documentation"),
     "browse": ("参照", "Browse"),
 
     # --- ファイル設定 ---

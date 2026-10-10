@@ -4,6 +4,7 @@ import os
 import re
 import sys
 import threading
+import webbrowser
 import tkinter as tk
 import winsound
 from tkinter import colorchooser, filedialog, font as tkfont, messagebox
@@ -33,6 +34,11 @@ _TOUTEN_CHOICES = [("そのまま", "punct_unchanged"), ("、", None), (",(半�
                    ("，(全角)", "punct_comma_full"), ("(半角空白)", "punct_space_half"), ("(全角空白)", "punct_space_full")]
 _KUTEN_CHOICES = [("そのまま", "punct_unchanged"), ("。", None), (".(半角)", "punct_period_half"),
                   ("．(全角)", "punct_period_full"), ("(半角空白)", "punct_space_half"), ("(全角空白)", "punct_space_full")]
+
+# ドキュメントサイト・リポジトリ
+DOCS_URL = "https://yasuaki-ito.github.io/PPVoice/"
+DOCS_URL_EN = "https://yasuaki-ito.github.io/PPVoice/en/"
+GITHUB_URL = "https://github.com/Yasuaki-Ito/PPVoice"
 
 # 字幕テキスト中のプレースホルダ → ログ表示用の文字
 _DISPLAY_UNESCAPE = {"\x02": "<", "\x03": ">", "\x13": "$", "\x14": "$", "\x15": "{", "\x16": "}"}
@@ -418,7 +424,7 @@ class App(_AppBase):
             cursor="hand2",
         )
         note.pack(side="left", padx=(4, 0))
-        note.bind("<Button-1>", lambda e: __import__("webbrowser").open("https://voicevox.hiroshiba.jp/"))
+        note.bind("<Button-1>", lambda e: webbrowser.open("https://voicevox.hiroshiba.jp/"))
 
         # 文の区切り・末尾の余白
         self.pause_row = row = ctk.CTkFrame(sec, fg_color="transparent")
@@ -637,15 +643,21 @@ class App(_AppBase):
         sec = ctk.CTkFrame(parent)
         sec.pack(fill="both", expand=True)
 
-        # 表示言語
+        # ドキュメント・GitHub へのリンクと表示言語
         row = ctk.CTkFrame(sec, fg_color="transparent")
         row.pack(fill="x", padx=14, pady=(14, 0))
-        ctk.CTkLabel(row, text="言語 / Language").pack(side="left")
+        for text, url in ((t("link_docs"), DOCS_URL_EN if i18n.get_language() == "en" else DOCS_URL),
+                          ("GitHub", GITHUB_URL)):
+            link = ctk.CTkLabel(row, text=text, cursor="hand2", text_color=("#4F46E5", "#A5B4FC"),
+                                font=ctk.CTkFont(underline=True))
+            link.pack(side="left", padx=(0, 14))
+            link.bind("<Button-1>", lambda e, u=url: webbrowser.open(u))
         self.language_selector = ctk.CTkSegmentedButton(
             row, values=list(i18n.LANGUAGES.values()), command=self._on_language_selected,
         )
         self.language_selector.set(i18n.LANGUAGES[i18n.get_language()])
         self.language_selector.pack(side="right")
+        ctk.CTkLabel(row, text="言語 / Language").pack(side="right", padx=(0, 8))
 
         self.run_btn = ctk.CTkButton(
             sec, text=t("run"), font=ctk.CTkFont(size=15, weight="bold"),

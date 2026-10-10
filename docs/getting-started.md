@@ -6,7 +6,7 @@
 - 音声合成エンジン（次のどちらか。PPVoice と同時に起動しておきます）
     - [VOICEVOX](https://voicevox.hiroshiba.jp/)（日本語）
     - Kokoro-FastAPI などの OpenAI 互換 TTS サーバ（英語など）→ [音声合成エンジン](engines.md#openai-互換エンジン)
-- 動画に変換する場合は PowerPoint
+- PowerPoint（ノートの作成、生成した PPTX のスライドショー再生、動画への変換に使います。PPVoice の生成処理自体は PowerPoint を使いません）
 
 ## インストール
 

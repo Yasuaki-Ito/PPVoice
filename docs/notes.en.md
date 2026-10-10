@@ -32,7 +32,7 @@ A single `{` or `}` is shown as is unless it forms `{...|...}`, so no escaping i
 
 ### Accent (VOICEVOX only)
 
-With VOICEVOX, you can fix the Japanese pitch accent with a third value, such as `{橋|はし|2}`. See the Japanese version of this page for details.
+With VOICEVOX, you can fix the Japanese pitch accent with a third value, such as `{橋|はし|2}`. If VOICEVOX splits a compound word into two parts (for example, リスト構造), specifying the reading and accent for the whole word, such as `{リスト構造|リストこうぞう|4}`, makes it read as one word. See the Japanese version of this page for details.
 
 ## Math
 

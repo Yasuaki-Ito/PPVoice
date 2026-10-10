@@ -21,6 +21,32 @@ _PARTICLES = {
 }
 
 
+# 長音の表記をそろえるための、オ段・エ段のカナ
+_O_ROW = set("オコソトノホモヨロヲゴゾドボポォョ")
+_E_ROW = set("エケセテネヘメレゲゼデベペェ")
+_VOWEL_KANA = {**{c: "ア" for c in "アカサタナハマヤラワガザダバパァャ"}, **{c: "イ" for c in "イキシチニヒミリギジヂビピィ"},
+               **{c: "ウ" for c in "ウクスツヌフムユルグズヅブプゥュヴ"}, **{c: "エ" for c in _E_ROW},
+               **{c: "オ" for c in _O_ROW}}
+
+
+def _normalize_kana(text: str) -> str:
+    """カタカナの長音の表記を VOICEVOX のモーラ表記にそろえる。
+
+    「ー」→ 直前の母音, オ段の後の「ウ」→「オ」(コウ → コオ), エ段の後の「イ」→「エ」(エイ → エエ)。
+    """
+    out: list[str] = []
+    for c in text:
+        prev = out[-1] if out else ""
+        if c == "ー" and prev in _VOWEL_KANA:
+            c = _VOWEL_KANA[prev]
+        elif c == "ウ" and prev in _O_ROW:
+            c = "オ"
+        elif c == "イ" and prev in _E_ROW:
+            c = "エ"
+        out.append(c)
+    return "".join(out)
+
+
 class VoicevoxEngine(TTSEngine):
     """VOICEVOXローカルエンジンを使った音声合成。
 
@@ -61,23 +87,34 @@ class VoicevoxEngine(TTSEngine):
         if not accents:
             return query
         phrases = query.get("accent_phrases", [])
-        texts = ["".join(m["text"] for m in phrase["moras"]) for phrase in phrases]
+        # 長音の表記をそろえて比べる (VOICEVOX は「こうぞう」を コオゾオ と表記する)
+        texts = [_normalize_kana("".join(m["text"] for m in phrase["moras"])) for phrase in phrases]
 
-        def find(katakana: str, start: int) -> int | None:
-            """start 以降で katakana に当たる句を探す。
+        def find(katakana: str, start: int) -> tuple[int, int] | None:
+            """start 以降で katakana に当たる句の範囲 (先頭の句, 末尾の句) を探す。
 
             1. 句が「語そのもの」か「語 + 助詞」(ファイルヲ, ハシワ, ファイルカラ など)
             2. 見つからなければ前方一致 (2文字以上の語のみ。複合語に当たることがある)
+            3. 見つからなければ、連続する複数の句にまたがって一致する範囲
+               (VOICEVOX が「リスト構造」を リスト + コオゾオ に分けた場合など)
             """
             candidates = range(start, len(phrases))
             for i in candidates:
                 if texts[i].startswith(katakana) and (
                         len(texts[i]) == len(katakana) or texts[i][len(katakana):] in _PARTICLES):
-                    return i
+                    return i, i
             if len(katakana) >= 2:
                 for i in candidates:
                     if texts[i].startswith(katakana):
-                        return i
+                        return i, i
+            for i in candidates:
+                joined = texts[i]
+                for j in range(i + 1, len(phrases)):
+                    if not katakana.startswith(joined):
+                        break
+                    joined += texts[j]
+                    if joined.startswith(katakana):
+                        return i, j
             return None
 
         # 指定は文中の出現順に並んでいるので、前の指定が当たった句より後ろから探す
@@ -86,13 +123,22 @@ class VoicevoxEngine(TTSEngine):
         modified = False
         pos = 0
         for katakana, accent_pos in accents:
-            i = find(katakana, pos)
-            if i is None:
-                i = find(katakana, 0)
-            if i is not None:
-                phrases[i]["accent"] = accent_pos
-                pos = i + 1
-                modified = True
+            katakana = _normalize_kana(katakana)
+            found = find(katakana, pos) or find(katakana, 0)
+            if found is None:
+                continue
+            i, j = found
+            if j > i:
+                # 複数の句を1つに結合する (VOICEVOX エディタの「アクセント句の結合」と同じ)
+                merged = phrases[i]
+                merged["moras"] = [m for p in phrases[i:j + 1] for m in p["moras"]]
+                merged["pause_mora"] = phrases[j].get("pause_mora")
+                merged["is_interrogative"] = phrases[j].get("is_interrogative", False)
+                del phrases[i + 1:j + 1]
+                texts[i:j + 1] = ["".join(texts[i:j + 1])]
+            phrases[i]["accent"] = accent_pos
+            pos = i + 1
+            modified = True
         if modified:
             # mora_pitch でピッチ再計算 (失敗時は mora_data を試す)
             recalculated = False

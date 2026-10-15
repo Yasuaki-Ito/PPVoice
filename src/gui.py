@@ -1655,11 +1655,13 @@ class App(_AppBase):
                 raise _CancelledError()
 
             slide_num = info.index + 1
+            # 進捗は処理するスライド (一部だけ選んだ場合は選んだスライド) の中での順番
+            step = processed + 1
             if not info.notes_text:
-                print(t("log_slide_skip", i=slide_num, total=total_slides, num=slide_num))
+                print(t("log_slide_skip", i=step, total=len(slides), num=slide_num))
                 slide_audio.append((info.index, b""))
             else:
-                print(t("log_slide", i=slide_num, total=total_slides, num=slide_num))
+                print(t("log_slide", i=step, total=len(slides), num=slide_num))
 
                 def on_chunk(i, total, text, _sn=slide_num):
                     if self._cancel_event.is_set():
@@ -1675,7 +1677,7 @@ class App(_AppBase):
                 slide_audio.append((info.index, wav))
 
             processed += 1
-            self.after(0, self.progress.set, processed / total_slides)
+            self.after(0, self.progress.set, processed / len(slides))
 
         # PPTX出力
         print(t("log_embedding"))

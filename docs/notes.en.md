@@ -72,7 +72,7 @@ Enclose a tag in `{...}`, such as `{<b>}`, to show it as text instead of interpr
 
 ## Voice control tags
 
-You can change how each sentence is read. A tag applies to the whole sentence (line) it is written in.
+You can change how each sentence is read. A tag applies to the whole sentence (line) it is written in. A tag on a line by itself does not apply to the next line, so write it on the same line as the sentence.
 
 | Tag | Effect |
 |---|---|

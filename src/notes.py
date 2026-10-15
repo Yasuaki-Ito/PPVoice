@@ -191,6 +191,12 @@ def _split_sentences(
         placeholders.append(m.group(0))
         return f"\x00{len(placeholders) - 1}\x00"
 
+    # プレースホルダを復元
+    # 左から1回だけ走査する。番号順の str.replace だと、隣接するプレースホルダの
+    # 境界 (例: "\x004\x002\x005\x00" の中の "\x002\x00") を誤って置換してしまう
+    def _restore(s):
+        return _PLACEHOLDER.sub(lambda m: placeholders[int(m.group(1))], s)
+
     protected = _READING_PATTERN.sub(_protect, text)
     protected = _BRACE_PATTERN.sub(_protect, protected)
 
@@ -232,6 +238,10 @@ def _split_sentences(
                 # <next> を除去してテキストを取得
                 clean = chunk.replace(_NEXT_PH, "")
                 clean = clean.strip()
+                # 読み上げる文字がない行 (<speed=1.2> だけの行など) は文にしない。
+                # 空の文にすると、無音の区切りが前後に2回入るうえ、エンジンによってはエラーになる
+                if clean and not _to_reading(_restore(clean)).strip():
+                    clean = ""
                 if clean:
                     if sentences:
                         pauses.append(pending_wait)
@@ -277,12 +287,6 @@ def _split_sentences(
     # 末尾の pending_next
     if pending_next and sentences:
         next_positions.append((len(sentences) - 1, 1.0))
-
-    # プレースホルダを復元
-    # 左から1回だけ走査する。番号順の str.replace だと、隣接するプレースホルダの
-    # 境界 (例: "\x004\x002\x005\x00" の中の "\x002\x00") を誤って置換してしまう
-    def _restore(s):
-        return _PLACEHOLDER.sub(lambda m: placeholders[int(m.group(1))], s)
 
     return [_restore(s) for s in sentences], pauses, leading_pause, next_positions
 

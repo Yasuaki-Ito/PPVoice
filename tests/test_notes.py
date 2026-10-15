@@ -54,13 +54,33 @@ def test_config_tag_is_removed():
     assert [s.display for s in p.sentences] == ["本文。"]
 
 
-def test_tag_only_line_becomes_empty_sentence():
-    # 現状の動作: タグだけの行は空の文になり、速度の指定はどの文にも効かない
-    # (フェーズ0c で修正予定。修正したらこのテストも直す)
+def test_tag_only_line_is_not_a_sentence():
+    # v0.7.3: 読み上げる文字がない行は文にしない (以前は空の文になり、Kokoro ではエラーになっていた)
+    # その行の音声タグは次の行には効かない
     p = parse_notes("一行目。\n<speed=1.2>\n二行目。")
-    assert [(s.display, s.reading) for s in p.sentences] == [("一行目。", "一行目。"), ("", ""), ("二行目。", "二行目。")]
-    assert p.sentences[1].speed == 1.2
-    assert p.sentences[2].speed is None
+    assert [(s.display, s.reading, s.speed) for s in p.sentences] == [
+        ("一行目。", "一行目。", None), ("二行目。", "二行目。", None)]
+    assert p.pauses == [None]
+
+
+def test_format_tag_only_line_is_not_a_sentence():
+    assert [s.display for s in parse_notes("<b></b>\n本文。").sentences] == ["本文。"]
+
+
+def test_tag_only_line_keeps_wait_and_next():
+    p = parse_notes("前。<wait=1s>\n<volume=0.5>\n後。")
+    assert [s.display for s in p.sentences] == ["前。", "後。"]
+    assert p.pauses == [1.0]
+    p = parse_notes("一行目。\n<next><speed=1.2>\n二行目。")
+    assert p.next_positions == [(0, 1.0)]
+
+
+def test_tag_on_same_line_still_applies():
+    assert parse_notes("一行目。\n<speed=1.2>二行目。").sentences[1].speed == 1.2
+
+
+def test_only_tags_gives_no_sentences():
+    assert parse_notes("<speed=1.2>").sentences == []
 
 
 # ---------------------------------------------------------------------------

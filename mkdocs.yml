@@ -56,11 +56,13 @@ plugins:
             - Home: index.md
             - Getting started: getting-started.md
             - Writing notes: notes.md
+            - Dialogues: dialogue.md
             - Animation sync: animation.md
             - Subtitles: subtitles.md
             - TTS engines: engines.md
             - Saving settings: config.md
             - Export to video: video.md
+            - CLI and AI agents: cli.md
             - FAQ: faq.md
 
 markdown_extensions:
@@ -83,9 +85,11 @@ nav:
   - ホーム: index.md
   - はじめかた: getting-started.md
   - ノートの書き方: notes.md
+  - 掛け合い: dialogue.md
   - アニメーション連携: animation.md
   - 字幕の設定: subtitles.md
   - 音声合成エンジン: engines.md
   - 設定の保存: config.md
   - 動画への変換: video.md
+  - CLI・AI エージェント: cli.md
   - よくある質問: faq.md

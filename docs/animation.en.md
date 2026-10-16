@@ -20,10 +20,10 @@ In the middle of a sentence, the timing is estimated from the character count. F
 
 ## When the numbers of `<next>` and animations differ
 
-- **More animations than `<next>`:** If **Auto-play extra animations** is on, the extra animations play one by one at the set interval (seconds) after the narration ends. If it is off, they wait for a click
+- **More animations than `<next>`:** If **Auto-play extra animations** on the **Other** tab is on, the extra animations play one by one at the set interval (seconds) after the narration ends. If it is off, they wait for a click
 - **More `<next>` than animations:** The extra `<next>` tags are ignored
 - **No `<next>` at all:** All animations are treated as extra (the original animations are kept)
 
-Click **Check <next>** to see the numbers of animations and `<next>` tags for each slide.
+Click **Check notes** on the **Other** tab to see the numbers of animations and `<next>` tags for each slide (mistakes in the notes are checked too).
 
 Animation sync works the same way when subtitles are turned off.

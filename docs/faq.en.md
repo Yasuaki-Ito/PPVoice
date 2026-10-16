@@ -38,7 +38,21 @@ The LaTeX could not be converted. The log shows a warning with the equation, so 
 
 ## I want to regenerate only some slides
 
-Choose **Selected** in **Slides** to choose the slides to generate.
+Choose **Selected** in **Slides** at the top to choose the slides to generate.
+
+From the second time, slides whose notes and settings have not changed reuse the previous results, so generating all slides also finishes quickly.
+
+## I changed a dictionary but the reading did not change (cache)
+
+PPVoice reuses previous results for slides whose notes, roles, dictionary, and settings are the same. Changes on the TTS engine side, such as the VOICEVOX user dictionary, cannot be detected, so after such changes, click **Clear cache** on the **Other** tab or turn off **Reuse previous results**. On the command line, add `--no-cache`.
+
+## Does PPVoice connect to the internet at startup?
+
+To check for a new version, PPVoice asks GitHub (`api.github.com`) for the latest release at startup. Only a normal request is sent. You can turn this off with **Check for a new version at startup** on the **Other** tab.
+
+## PowerPoint started by itself
+
+Video export, the subtitle preview, and slide thumbnails use PowerPoint without showing a window. PPVoice opens temporary copies only, so presentations you have open are not affected. If PPVoice started PowerPoint, it quits PowerPoint when done. To stop using PowerPoint, turn off **Use PowerPoint** on the **Other** tab.
 
 ## I found a bug
 

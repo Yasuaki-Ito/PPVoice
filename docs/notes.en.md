@@ -30,6 +30,21 @@ Open the {PPTX|P P T X} file.
 
 A single `{` or `}` is shown as is unless it forms `{...|...}`, so no escaping is needed. Text enclosed in `{...}` (without `|`) is shown as is, without interpreting tags or replacing punctuation.
 
+### Reading dictionary
+
+Instead of writing `{...|...}` for the same word every time, you can register readings for the whole file in a dictionary. Edit it with **Dictionary...** on the **Voice** tab, or write a `<dict>` tag in the notes.
+
+```
+<dict GUI="G U I" PPTX="P P T X" "Fig."=Figure>
+```
+
+- The reading is written the same way as in `{display|reading}`
+- A `<dict>` tag on any slide applies to the whole file. It affects neither the narration nor the subtitles by itself
+- Longer words are matched first (`PowerPoint` before `Power`)
+- Words of letters and digits are matched only as whole words (`GUI` does not match `GUIDE`). Matching is case-sensitive
+- Text inside `{...}`, tags, and math is not rewritten
+- The dictionary is saved as a `<dict>` tag with **Show tags** → [Saving settings](config.md)
+
 ### Accent (VOICEVOX only)
 
 With VOICEVOX, you can fix the Japanese pitch accent with a third value, such as `{橋|はし|2}`. If VOICEVOX splits a compound word into two parts (for example, リスト構造), specifying the reading and accent for the whole word, such as `{リスト構造|リストこうぞう|4}`, makes it read as one word. See the Japanese version of this page for details.
@@ -95,4 +110,17 @@ Let's take a breath here.<wait=2s>
 | Tag | Description |
 |---|---|
 | `<next>` | Where to play a click animation → [Animation sync](animation.md) |
+| `<speaker=role>` | Switch the speaker (role) → [Dialogues](dialogue.md) |
+| `<style=name>` | Change the style of one sentence (VOICEVOX only) → [Dialogues](dialogue.md) |
 | `<config ...>` | Saved app settings → [Saving settings](config.md) |
+| `<cast ...>` | Role definition → [Saving settings](config.md#roles-cast) |
+| `<dict ...>` | Reading dictionary → [Reading dictionary](#reading-dictionary) |
+
+## Checking for mistakes
+
+Unknown tags (such as `<sped=1.2>`) and tags with invalid values (such as `<color=red>`) are not treated as tags, so they are shown in subtitles and read aloud. Mistakes like these are reported in the log before generating (generation does not stop). You can also check them with **Check notes** on the **Other** tab.
+
+- Unknown tags and tags with invalid values
+- Formatting tags not closed within the sentence (`<b>` without `</b>`. Formatting does not continue to the next sentence)
+- Undefined roles (`<speaker=...>`) and styles the role's speaker does not have (`<style=...>`)
+- Different numbers of `<next>` tags and animations (Check notes only)

@@ -2,6 +2,17 @@
 
 With **Show subtitles** on, subtitles are shown at the bottom of each slide in time with the narration. Each subtitle is added as a text box that appears and disappears sentence by sentence, so you can adjust their position or text in PowerPoint after generating.
 
+These settings are on the **Subtitles** tab.
+
+## Speaker names and role colors
+
+- With **Show speaker names** on, subtitles start with `Name: ` in bold (for dialogues)
+- The subtitle color of each role is set in the cast on the **Voice** tab. If a role has no color, the text color here is used → [Dialogues](dialogue.md#subtitles)
+
+## Preview
+
+If PowerPoint is installed, the bottom of the Subtitles tab shows a slide with a subtitle, rendered by PowerPoint. Choose a slide and click **Show** to see the first sentence of its notes as a subtitle. After that, the preview is updated automatically whenever you change a setting.
+
 ## Style
 
 | Style | Description |
@@ -26,7 +37,7 @@ With **Show subtitles** on, subtitles are shown at the bottom of each slide in t
 
 ## Replacing punctuation
 
-You can replace the punctuation shown in subtitles. In **Replace**, choose what **Comma** (`、` `，` `,`) and **Period** (`。` `．` `.`) are replaced with. This is mainly for Japanese text.
+You can replace the punctuation shown in subtitles. Choose what **Comma** (`、` `，` `,`) and **Period** (`。` `．` `.`) are replaced with. This is mainly for Japanese text.
 
 - The narration is not affected
 - Punctuation inside `{...}` and in math is not replaced

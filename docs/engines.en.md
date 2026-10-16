@@ -1,6 +1,6 @@
 # TTS engines
 
-Choose the TTS engine with **Engine** in the **Voice** settings.
+Choose the TTS engine with **Engine** on the **Voice** tab. The engine is shared by all roles.
 
 | Engine | Language | Notes |
 |---|---|---|

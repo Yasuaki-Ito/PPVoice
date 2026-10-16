@@ -7,7 +7,7 @@ import re
 
 import pytest
 
-gui = pytest.importorskip("gui")
+subtitle_tab = pytest.importorskip("ui.subtitle_tab")
 import i18n  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -22,17 +22,18 @@ def english():
 
 
 def test_punct_label_and_value_roundtrip(english):
-    for choices in (gui._KUTEN_CHOICES, gui._TOUTEN_CHOICES):
+    for choices in (subtitle_tab.KUTEN_CHOICES, subtitle_tab.TOUTEN_CHOICES):
         for value, _ in choices:
-            label = gui.App._punct_label(choices, value)
-            assert gui.App._punct_value(choices, label) == value
+            label = subtitle_tab.punct_label(choices, value)
+            assert subtitle_tab.punct_value(choices, label) == value
 
 
 def test_punct_label_in_english(english):
-    assert gui.App._punct_label(gui._KUTEN_CHOICES, "そのまま") == "Unchanged"
-    assert gui.App._punct_label(gui._KUTEN_CHOICES, "。") == "。"
+    kuten = subtitle_tab.KUTEN_CHOICES
+    assert subtitle_tab.punct_label(kuten, "そのまま") == "Unchanged"
+    assert subtitle_tab.punct_label(kuten, "。") == "。"
     # 英語の表示名で書かれた値も受け付ける
-    assert gui.App._punct_value(gui._KUTEN_CHOICES, "Unchanged") == "そのまま"
+    assert subtitle_tab.punct_value(kuten, "Unchanged") == "そのまま"
 
 
 # ---------------------------------------------------------------------------

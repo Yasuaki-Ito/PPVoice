@@ -110,11 +110,11 @@
   "CTkSegmentedButton": {
     "corner_radius": 10,
     "border_width": 2,
-    "fg_color": ["#E2E8F0", "#3A3A4C"],
+    "fg_color": ["#94A3B8", "#3A3A4C"],
     "selected_color": ["#6366F1", "#818CF8"],
     "selected_hover_color": ["#4F46E5", "#6366F1"],
-    "unselected_color": ["#E2E8F0", "#3A3A4C"],
-    "unselected_hover_color": ["#CBD5E0", "#4A5568"],
+    "unselected_color": ["#94A3B8", "#3A3A4C"],
+    "unselected_hover_color": ["#7C8BA1", "#4A5568"],
     "text_color": ["#FFFFFF", "#FFFFFF"],
     "text_color_disabled": ["#A0AEC0", "#4A5568"]
   },

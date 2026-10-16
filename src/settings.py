@@ -127,6 +127,8 @@ class Settings:
     speaker: str = ""                # VOICEVOX: 話者名 / OpenAI互換: 声の ID
     style: str = ""                  # VOICEVOX のスタイル名
     role: str = ""                   # 既定の役の名前 (<speaker=...> で使う)。空なら話者名
+    role_color: str = ""             # 既定の役の字幕色 (空なら字幕の文字色)
+    role_label: str = ""             # 既定の役の字幕に出す名前 (空なら役名)
     cast: dict[str, Role] = field(default_factory=dict)  # <cast> で追加した役 (名前 → 役)
     dictionary: dict[str, str] = field(default_factory=dict)  # <dict> の読みの辞書 (語 → 読み)
     # --- 音声 ---
@@ -210,7 +212,7 @@ class Settings:
                 elif kind in ("float", float):
                     setattr(self, key, float(value))
                 elif key.endswith("_color"):
-                    setattr(self, key, _color(value))
+                    setattr(self, key, _color(value) if value.strip() else "")
                 else:
                     setattr(self, key, value)
             except ValueError:
@@ -256,6 +258,10 @@ class Settings:
                 add("style", self.style)
         if self.role:
             add("role", self.role)
+        if self.role_color:
+            add("role_color", self.role_color)
+        if self.role_label:
+            add("role_label", self.role_label)
         # 音声
         add("pause", f"{self.pause:.1f}")
         if self.turn_pause is not None:

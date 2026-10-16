@@ -220,7 +220,8 @@ def create_cast(settings: Settings, speakers=None) -> Cast:
     if speakers is None and need_list:
         speakers = fetch_speakers(settings)
     default = _create_voice(settings, speakers, settings.role, settings.speaker, settings.style, settings.speed,
-                            settings.pitch, settings.intonation, settings.volume)
+                            settings.pitch, settings.intonation, settings.volume,
+                            color=settings.role_color, subtitle_name=settings.role_label)
     roles = {
         r.name: _create_voice(settings, speakers, r.name, r.speaker, r.style, r.speed, r.pitch, r.intonation,
                               r.volume, instructions=r.instructions, color=r.color, subtitle_name=r.label)

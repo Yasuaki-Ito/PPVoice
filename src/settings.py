@@ -144,6 +144,7 @@ class Settings:
     # --- 字幕 ---
     subtitle: bool = True
     subtitle_style: str = "outline"  # outline / box
+    subtitle_name: bool = False      # 字幕の前に話者名を付ける (掛け合い向け)
     fontsize: int = 18
     font: str = ""                   # 空ならテーマの既定のフォント
     bottom: float = 0.05
@@ -270,6 +271,8 @@ class Settings:
         # 字幕
         add("subtitle", onoff(self.subtitle))
         add("subtitle_style", self.subtitle_style)
+        if self.subtitle_name:
+            add("subtitle_name", onoff(self.subtitle_name))
         add("fontsize", self.fontsize)
         add("font", self.font)
         add("bottom", f"{self.bottom:.2f}")
@@ -318,5 +321,6 @@ class Settings:
             subtitle_default_italic=self.italic,
             subtitle_default_underline=self.underline,
             subtitle_math_bold=self.math_bold,
+            subtitle_show_name=self.subtitle_name,
             auto_next_interval_ms=int(self.auto_next * 1000) if self.auto_next_enabled else -1,
         )

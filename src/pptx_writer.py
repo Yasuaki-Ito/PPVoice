@@ -357,6 +357,8 @@ def _add_subtitle_shapes(
     default_italic: bool = False,
     default_underline: bool = False,
     math_bold: bool = True,
+    roles: dict[str, tuple[str, str]] | None = None,
+    show_name: bool = False,
 ) -> tuple[list[int], list[tuple[str, int, int]]]:
     """字幕用テキストボックスをスライドに追加する。
 
@@ -375,6 +377,8 @@ def _add_subtitle_shapes(
         default_italic: デフォルトの斜体設定 (デフォルト: False)
         default_underline: デフォルトの下線設定 (デフォルト: False)
         math_bold: 数式を太字にする (デフォルト: True)
+        roles: {役名: (字幕色 hex RGB (空なら font_color), 字幕に出す名前)}
+        show_name: 字幕の前に話者名を付ける (「名前: 本文」。名前は太字)
 
     Returns:
         (シェイプIDリスト, 分割後のタイミングリスト)
@@ -388,7 +392,7 @@ def _add_subtitle_shapes(
     box_w = int(slide_w * 0.85)
     box_left = int((slide_w - box_w) / 2)
 
-    def _fill_paragraph(p, line_text):
+    def _fill_paragraph(p, line_text, font_color):
         """1つの段落に書式付きテキストを設定する。"""
         p.alignment = PP_ALIGN.CENTER
         p.space_before = Pt(0)
@@ -447,6 +451,13 @@ def _add_subtitle_shapes(
     shape_ids = []
     for timing in timings:
         lines = timing.text.split("\n")
+        # 役の字幕色 (<color> タグはさらに優先) と話者名
+        role_color, role_name = (roles or {}).get(timing.speaker, ("", timing.speaker or ""))
+        color = (RGBColor(int(role_color[0:2], 16), int(role_color[2:4], 16), int(role_color[4:6], 16))
+                 if role_color else font_color)
+        if show_name and role_name:
+            name = role_name.replace("<", _LT).replace(">", _GT)
+            lines[0] = f"<b>{name}: </b>{lines[0]}"
         line_emu = int(Pt(font_size).emu * 1.5)
         # 数式を含む行は分数・添字で背が高くなるため行の高さを広げる
         math_line_emu = int(Pt(font_size).emu * 1.8)
@@ -467,9 +478,9 @@ def _add_subtitle_shapes(
             body_pr.set("bIns", "0")
 
         # 1行目は既存の段落を使用、2行目以降は add_paragraph()
-        _fill_paragraph(tf.paragraphs[0], lines[0])
+        _fill_paragraph(tf.paragraphs[0], lines[0], color)
         for line in lines[1:]:
-            _fill_paragraph(tf.add_paragraph(), line)
+            _fill_paragraph(tf.add_paragraph(), line, color)
 
         if style == "outline":
             txBox.fill.background()
@@ -800,6 +811,8 @@ def embed_audio(
     subtitle_math_bold: bool = True,
     slide_next_positions: dict[int, list[tuple[int, float]]] | None = None,
     auto_next_interval_ms: int = 5000,
+    subtitle_roles: dict[str, tuple[str, str]] | None = None,
+    subtitle_show_name: bool = False,
 ) -> None:
     """各スライドに音声を埋め込んだPPTXを生成する。
 
@@ -813,6 +826,8 @@ def embed_audio(
         show_subtitles: 字幕を追加する (False でも slide_timings は <next> の計算に使う)
         slide_next_positions: {スライドインデックス: [(sent_idx, ratio), ...]}
         auto_next_interval_ms: 余りクリックグループの自動発火間隔 (ms)
+        subtitle_roles: {役名: (字幕色 hex RGB (空なら subtitle_font_color), 字幕に出す名前)}
+        subtitle_show_name: 字幕の前に話者名を付ける
     """
     prs = Presentation(source_path)
 
@@ -872,6 +887,8 @@ def embed_audio(
                 default_italic=subtitle_default_italic,
                 default_underline=subtitle_default_underline,
                 math_bold=subtitle_math_bold,
+                roles=subtitle_roles,
+                show_name=subtitle_show_name,
             )
             # (shape_id, appear_ms, disappear_ms) のリストを作成
             subtitle_anim_data = []

@@ -158,6 +158,11 @@ class Cast:
             return None
         return {name: set(v.styles) for name, v in {self.default.name: self.default, **self.roles}.items()}
 
+    def subtitle_roles(self) -> dict[str, tuple[str, str]]:
+        """embed_audio に渡す {役名: (字幕色 hex RGB (空なら既定の色), 字幕に出す名前)}"""
+        voices = {self.default.name: self.default, **self.roles}
+        return {name: (v.color.lstrip("#"), v.subtitle_name or name) for name, v in voices.items()}
+
     def lint(self, text: str) -> list[Issue]:
         """ノートを確認する。役とスタイルの問題は、合成のときに同じ警告を出さないようにする。"""
         issues = lint_notes(text, self.names, self.default.name, self.styles, self.engine)
@@ -426,6 +431,7 @@ def generate(
         output_path,
         slide_timings=slide_timings,
         slide_next_positions=slide_next_positions if slide_next_positions else None,
+        subtitle_roles=cast.subtitle_roles(),
         **settings.embed_kwargs(),
     )
 

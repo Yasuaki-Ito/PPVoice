@@ -1192,6 +1192,7 @@ class App(_AppBase):
         s.cast = dict(self._voice_extra.cast)
         s.turn_pause = self._voice_extra.turn_pause
         s.dictionary = dict(self._voice_extra.dictionary)
+        s.subtitle_name = self._voice_extra.subtitle_name
         return s
 
     def _load_settings_to_ui(self, s: Settings):
@@ -1236,6 +1237,7 @@ class App(_AppBase):
         self._voice_extra.cast = dict(s.cast)
         self._voice_extra.turn_pause = s.turn_pause
         self._voice_extra.dictionary = dict(s.dictionary)
+        self._voice_extra.subtitle_name = s.subtitle_name
         # 話者は名前で選ぶ (一覧を取得していなければ、取得したときに選ぶ)
         self._wanted_voice = (s.speaker, s.style)
         if self._speaker_map:

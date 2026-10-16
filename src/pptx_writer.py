@@ -4,7 +4,6 @@ import copy
 import io
 import os
 import re
-import subprocess
 import wave
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -17,6 +16,7 @@ from pptx.opc.package import Part
 from pptx.opc.packuri import PackURI
 from pptx.util import Emu, Pt
 
+import powerpoint
 from i18n import t
 from tts.base import Timing
 # 字幕テキスト (notes._to_display の出力) に含まれるプレースホルダ
@@ -761,28 +761,6 @@ def _make_timing_xml(
 # メイン関数
 # ---------------------------------------------------------------------------
 
-def _try_close_powerpoint_file(filepath: str) -> None:
-    """PowerPointで開かれているファイルをCOM経由で閉じる。"""
-    abs_path = os.path.abspath(filepath)
-    escaped = abs_path.replace("'", "''")
-    script = (
-        "try { "
-        "$ppt = [Runtime.InteropServices.Marshal]::GetActiveObject('PowerPoint.Application'); "
-        "foreach ($p in $ppt.Presentations) { "
-        "if ($p.FullName -eq '" + escaped + "') { "
-        "$p.Saved = $true; $p.Close(); break } } "
-        "} catch { }"
-    )
-    try:
-        subprocess.run(
-            ["powershell", "-NoProfile", "-Command", script],
-            capture_output=True, timeout=10,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-    except Exception:
-        pass
-
-
 def embed_audio(
     source_path: str,
     slide_audio: list[tuple[int, bytes]],
@@ -964,7 +942,7 @@ def embed_audio(
         )
         sld.insert(insert_idx + 1, timing_el)
 
-    _try_close_powerpoint_file(output_path)
+    powerpoint.close_file(output_path)
     try:
         prs.save(output_path)
     except PermissionError:

@@ -485,3 +485,44 @@ def check_next_tags(input_path: str) -> list[NextCheck]:
             n_next = len(_NEXT_TAG.findall(stripped))
         result.append(NextCheck(si.index + 1, len(click_groups), n_next))
     return result
+
+
+# ---------------------------------------------------------------------------
+# 字幕のプレビュー (PowerPoint で描くための一時的な PPTX)
+# ---------------------------------------------------------------------------
+
+def subtitle_roles(settings: Settings) -> dict[str, tuple[str, str]]:
+    """話者一覧を引かずに分かる範囲の、役の字幕色と字幕の名前 (プレビュー用)。"""
+    roles = {default_role_name(settings): (settings.role_color.lstrip("#"), settings.role_label)}
+    roles.update({r.name: (r.color.lstrip("#"), r.label) for r in settings.cast.values()})
+    return {name: (color, label or name) for name, (color, label) in roles.items()}
+
+
+def make_preview_pptx(settings: Settings, input_path: str, slide_num: int, output_path: str,
+                      sample_text: str = "") -> None:
+    """slide_num (1始まり) のノートの最初の文を字幕にした PPTX を作る (音声は短い無音)。
+
+    字幕の表示・非表示のアニメーションは画像には写らないので、字幕は1文だけにする。
+    ノートがなければ sample_text を使う。
+    """
+    import io
+    import wave
+
+    slides = read_slides(input_path)
+    info = slides[slide_num - 1]
+    parsed = parse_notes(info.notes_text, settings.split_sentences, settings.dictionary) if info.notes_text else None
+    if parsed and parsed.sentences:
+        sentence = parsed.sentences[0]
+        display, speaker = sentence.display, sentence.speaker
+    else:
+        display, speaker = sample_text, None
+    speaker = speaker or default_role_name(settings)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(8000)
+        w.writeframes(b"\x00\x00" * 800)
+    embed_audio(input_path, [(info.index, buf.getvalue())], output_path,
+                slide_timings={info.index: [Timing(display, 0, 100, speaker)]},
+                subtitle_roles=subtitle_roles(settings), **settings.embed_kwargs())

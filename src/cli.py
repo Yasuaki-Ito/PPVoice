@@ -1,12 +1,13 @@
 """PPVoice のコマンドライン版 (AI エージェントなどからの実行を想定)
 
   python src/cli.py generate in.pptx [-o out.pptx] [--slides 1-3,5] [--force] [--set key=value ...] [--json]
+                                     [--video [out.mp4]] [--video-height 1080]
   python src/cli.py check    in.pptx [--slides 1-3,5] [--set key=value ...] [--json]
   python src/cli.py speakers [--engine voicevox|openai] [--url URL] [--json]
 
 - 設定は PPTX のノートの <config> を読み、--set で上書きする (キーは <config> と同じ。例: --set speed=1.2)
 - 進捗とログは stderr、結果は stdout に出す。--json で機械が読める形にする
-- 終了コード: 0 = 成功, 1 = 入力・設定のエラー, 2 = TTS サーバのエラー
+- 終了コード: 0 = 成功, 1 = 入力・設定のエラー, 2 = TTS サーバのエラー, 3 = PowerPoint のエラー (--video)
 - OpenAI 互換の API キーは環境変数 OPENAI_API_KEY から読む (コマンドの履歴に残らないように)
 """
 
@@ -23,6 +24,7 @@ import requests  # noqa: E402
 
 import i18n  # noqa: E402
 import pipeline  # noqa: E402
+import powerpoint  # noqa: E402
 from cache import SynthCache  # noqa: E402
 from lint import lint_notes  # noqa: E402
 from notes import parse_notes  # noqa: E402
@@ -30,7 +32,7 @@ from pptx_reader import read_slides  # noqa: E402
 from settings import DEFAULT_URLS, ENGINES, Settings, parse_config_tags  # noqa: E402
 from version import __version__  # noqa: E402
 
-EXIT_OK, EXIT_INPUT, EXIT_SERVER = 0, 1, 2
+EXIT_OK, EXIT_INPUT, EXIT_SERVER, EXIT_POWERPOINT = 0, 1, 2, 3
 
 
 class CliError(Exception):
@@ -119,6 +121,13 @@ def cmd_generate(args) -> dict:
     output = args.output or os.path.splitext(args.input)[0] + "_speech.pptx"
     if os.path.exists(output) and not args.force:
         raise CliError(f"output already exists (use --force to overwrite): {output}")
+    video = None
+    if args.video is not None:
+        video = args.video or os.path.splitext(output)[0] + ".mp4"
+        if os.path.exists(video) and not args.force:
+            raise CliError(f"video already exists (use --force to overwrite): {video}")
+        if not powerpoint.is_available():
+            raise CliError(i18n.t("log_powerpoint_unavailable").strip(), EXIT_POWERPOINT)
     settings = load_settings(args, args.input)
     try:
         engine = pipeline.create_engine(settings)
@@ -136,9 +145,30 @@ def cmd_generate(args) -> dict:
         if type(e).__name__ == "TTSServerError":
             raise CliError(str(e).strip(), EXIT_SERVER)
         raise
+    if video and result:
+        video = export_video(result.output, video, args.video_height)
     return {"output": result.output if result else None, "generated": result is not None,
+            "video": video if result else None,
             "engine": settings.engine, "voice": cast.label,
             "roles": result.roles if result else {}, "credits": result.credits if result else []}
+
+
+def export_video(pptx: str, mp4: str, height: int) -> str:
+    """PowerPoint で動画に書き出す。進み具合 (経過秒数) は stderr に出す。"""
+    last = [0.0]
+
+    def on_progress(sec: float):
+        if sec - last[0] >= 10:
+            last[0] = sec
+            print(i18n.t("log_video_progress", sec=int(sec)), file=sys.stderr)
+
+    print(i18n.t("log_video_start", path=mp4), file=sys.stderr)
+    try:
+        path = powerpoint.create_video(pptx, mp4, height=height, on_progress=on_progress)
+    except powerpoint.PowerPointError as e:
+        raise CliError(i18n.t("log_video_failed", e=e).strip(), EXIT_POWERPOINT)
+    print(i18n.t("log_video_done", path=path), file=sys.stderr)
+    return os.path.abspath(path)
 
 
 def cmd_check(args) -> dict:
@@ -203,7 +233,8 @@ def cmd_check(args) -> dict:
              for r in settings.cast.values() if r.name != default_role]
     defined = {c["name"] for c in cast}
     undefined = [name for name in roles if name not in defined]
-    return {"engine": settings.engine, "url": settings.url, "config": parse_config_tags(
+    return {"engine": settings.engine, "url": settings.url, "powerpoint": powerpoint.is_available(),
+        "config": parse_config_tags(
         [s.notes_text for s in slides if s.notes_text]), "speaker_check": speaker_check, "cast": cast,
         "undefined_roles": undefined, "dictionary": [{"word": w, "reading": r, "hits": dict_hits.get(w, 0)}
                                                       for w, r in settings.dictionary.items()],
@@ -284,6 +315,10 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("-o", "--output", help="output PPTX (default: <input>_speech.pptx)")
     g.add_argument("--slides", help="slides to generate, e.g. 1-3,5")
     g.add_argument("--force", action="store_true", help="overwrite the output if it exists")
+    g.add_argument("--video", nargs="?", const="", metavar="OUT.MP4",
+                   help="also export an MP4 with PowerPoint (default: <output>.mp4)")
+    g.add_argument("--video-height", type=int, default=1080, choices=[480, 720, 1080, 2160],
+                   help="video height in pixels (default: 1080)")
     g.add_argument("--no-cache", action="store_true",
                    help="synthesize all slides again without using the previous results")
 

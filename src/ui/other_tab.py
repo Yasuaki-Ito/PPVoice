@@ -3,6 +3,7 @@
 import customtkinter as ctk
 
 import i18n
+import powerpoint
 from cache import SynthCache
 from i18n import t
 from settings import Settings
@@ -55,6 +56,24 @@ class OtherTab(ctk.CTkScrollableFrame):
         self.cache_size_label.pack(side="left", padx=(10, 0))
         w.hint(self, t("cache_desc"), justify="left").pack(fill="x", padx=12, pady=(0, 2))
 
+        # PowerPoint との連携 (ユーザー設定)
+        w.heading(self, t("other_powerpoint"))
+        r = w.row(self)
+        self.use_powerpoint_var = ctk.BooleanVar(value=bool(i18n.get_user_setting("use_powerpoint", True)))
+        cb = ctk.CTkCheckBox(r, text=t("use_powerpoint"), variable=self.use_powerpoint_var,
+                             command=self._on_use_powerpoint)
+        cb.pack(side="left")
+        if not powerpoint.is_available():
+            cb.configure(state="disabled")
+            w.hint(r, t("powerpoint_not_found")).pack(side="left", padx=(10, 0))
+        r = w.row(self)
+        w.label(r, t("video_height"))
+        self.video_height_var = ctk.StringVar(value=f"{i18n.get_user_setting('video_height', 1080)}p")
+        ctk.CTkComboBox(r, values=["480p", "720p", "1080p", "2160p"], variable=self.video_height_var, width=100,
+                        state="readonly", command=lambda v: i18n.set_user_setting("video_height", int(v[:-1]))
+                        ).pack(side="left", padx=(4, 0))
+        w.hint(self, t("powerpoint_desc"), justify="left").pack(fill="x", padx=12, pady=(0, 2))
+
         # 更新の確認 (ユーザー設定)
         w.heading(self, t("other_updates"))
         r = w.row(self, pady=(2, 10))
@@ -78,6 +97,10 @@ class OtherTab(ctk.CTkScrollableFrame):
         except OSError as e:
             self.app._log(t("log_error", e=e))
         self.refresh_cache_size()
+
+    def _on_use_powerpoint(self):
+        i18n.set_user_setting("use_powerpoint", self.use_powerpoint_var.get())
+        self.app.apply_powerpoint_ui()
 
     @property
     def use_cache(self) -> bool:

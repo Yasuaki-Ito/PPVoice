@@ -18,6 +18,7 @@ from pptx.opc.packuri import PackURI
 from pptx.util import Emu, Pt
 
 from i18n import t
+from tts.base import Timing
 # 字幕テキスト (notes._to_display の出力) に含まれるプレースホルダ
 from notes import _GT, _LBRACE, _LT, _MATH_END, _MATH_START, _PUNCT_PH, _RBRACE
 
@@ -333,7 +334,7 @@ def _replace_run_with_math(run_element, latex: str, bold: bool = False) -> bool:
 
 def _add_subtitle_shapes(
     slide,
-    timings: list[tuple[str, int, int]],
+    timings: list[Timing],
     prs,
     font_size: int = 18,
     font_name: str = "",
@@ -442,8 +443,8 @@ def _add_subtitle_shapes(
                 _replace_run_with_math(run._r, t, bold=math_bold)
 
     shape_ids = []
-    for text, _, _ in timings:
-        lines = text.split("\n")
+    for timing in timings:
+        lines = timing.text.split("\n")
         line_emu = int(Pt(font_size).emu * 1.5)
         # 数式を含む行は分数・添字で背が高くなるため行の高さを広げる
         math_line_emu = int(Pt(font_size).emu * 1.8)
@@ -519,13 +520,13 @@ def _extract_click_groups(sld) -> tuple[list[etree._Element], etree._Element | N
 
 def _next_positions_to_ms(
     next_positions: list[tuple[int, float]],
-    timings: list[tuple[str, int, int]],
+    timings: list[Timing],
 ) -> list[int]:
     """next_positions と音声タイミングから発火ミリ秒リストを計算する。
 
     Args:
         next_positions: [(sentence_index, char_ratio), ...]
-        timings: [(text, start_ms, dur_ms), ...]
+        timings: 文のタイミング
 
     Returns:
         [ms, ...] — 各 <next> の発火ミリ秒
@@ -535,12 +536,12 @@ def _next_positions_to_ms(
         if sent_idx < 0:
             result.append(0)
         elif sent_idx < len(timings):
-            _, start_ms, dur_ms = timings[sent_idx]
-            result.append(start_ms + int(dur_ms * ratio))
+            tm = timings[sent_idx]
+            result.append(tm.start_ms + int(tm.dur_ms * ratio))
         elif timings:
             # 末尾を超えた場合は最後の文の終了位置
-            _, start_ms, dur_ms = timings[-1]
-            result.append(start_ms + dur_ms)
+            tm = timings[-1]
+            result.append(tm.start_ms + tm.dur_ms)
         else:
             result.append(0)
     return result
@@ -774,7 +775,7 @@ def embed_audio(
     slide_audio: list[tuple[int, bytes]],
     output_path: str,
     end_pause_ms: int = 2000,
-    slide_timings: dict[int, list[tuple[str, int, int]]] | None = None,
+    slide_timings: dict[int, list[Timing]] | None = None,
     show_subtitles: bool = True,
     subtitle_font_size: int = 18,
     subtitle_font_name: str = "",
@@ -805,7 +806,7 @@ def embed_audio(
         slide_audio: (スライドインデックス(0始まり), WAVバイナリ) のリスト
         output_path: 出力PPTXファイルパス
         end_pause_ms: 音声終了後、次スライドに進むまでの待機時間(ms)
-        slide_timings: {スライドインデックス: [(文, 開始ms, 長さms), ...]}
+        slide_timings: {スライドインデックス: [Timing, ...]}
             文のタイミング。字幕表示と <next> の発火タイミング計算に使う
         show_subtitles: 字幕を追加する (False でも slide_timings は <next> の計算に使う)
         slide_next_positions: {スライドインデックス: [(sent_idx, ratio), ...]}
@@ -872,12 +873,12 @@ def embed_audio(
             )
             # (shape_id, appear_ms, disappear_ms) のリストを作成
             subtitle_anim_data = []
-            for i, (sid, (_, start_ms, dur_ms)) in enumerate(zip(sub_shape_ids, split_timings)):
-                appear = start_ms
+            for i, (sid, tm) in enumerate(zip(sub_shape_ids, split_timings)):
+                appear = tm.start_ms
                 if i < len(split_timings) - 1:
-                    disappear = split_timings[i + 1][1]
+                    disappear = split_timings[i + 1].start_ms
                 else:
-                    disappear = start_ms + dur_ms
+                    disappear = tm.start_ms + tm.dur_ms
                 subtitle_anim_data.append((sid, appear, disappear))
 
         # タイミングXML (音声 + 字幕アニメーション)

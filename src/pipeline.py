@@ -8,13 +8,14 @@ from dataclasses import dataclass
 from typing import Callable
 
 from i18n import t
-from notes import _BRACE_PATTERN, _NEXT_TAG, _READING_PATTERN
+from notes import _BRACE_PATTERN, _NEXT_TAG, _READING_PATTERN, Sentence, parse_notes
 from pptx_reader import read_slides
 from pptx_writer import _extract_click_groups, embed_audio
 from settings import Settings, parse_config_tags
-from tts.base import TTSEngine
+from tts.base import Timing, TTSEngine, VoiceParams
 from tts.openai_compat import OpenAICompatEngine
 from tts.voicevox import VoicevoxEngine
+from tts.wav import _concat_wav
 
 
 class Cancelled(Exception):
@@ -47,10 +48,10 @@ def read_config(input_path: str) -> dict[str, str]:
 
 def fetch_speakers(settings: Settings):
     """話者の一覧を取得する。VOICEVOX は /speakers の結果、OpenAI互換は声の ID のリスト。"""
-    if settings.engine == "openai":
-        return OpenAICompatEngine(voice="", base_url=settings.url, api_key=settings.api_key).list_voices(
-            timeout=FETCH_TIMEOUT)
-    return VoicevoxEngine(base_url=settings.url).list_speakers(timeout=FETCH_TIMEOUT)
+    engine = create_engine(settings)
+    if isinstance(engine, OpenAICompatEngine):
+        return engine.list_voices(timeout=FETCH_TIMEOUT)
+    return engine.list_speakers(timeout=FETCH_TIMEOUT)
 
 
 def resolve_voicevox_style(speakers: list[dict], speaker: str, style: str) -> tuple[int, str, str]:
@@ -87,31 +88,80 @@ def resolve_openai_voice(voices: list[str], voice: str) -> str:
     return voices[0]
 
 
-def create_engine(settings: Settings, speakers=None) -> TTSEngine:
-    """設定からエンジンを作る。speakers は取得済みの話者一覧 (None なら取得する)。"""
+def create_engine(settings: Settings) -> TTSEngine:
+    """設定からエンジン (サーバ) を作る。声は create_voice で別に決める。"""
     if settings.engine == "openai":
-        voice = settings.speaker or resolve_openai_voice(
-            speakers if speakers is not None else fetch_speakers(settings), "")
-        return OpenAICompatEngine(
-            voice=voice, base_url=settings.url, model=settings.model.strip() or "kokoro",
-            api_key=settings.api_key.strip(), pause_sec=settings.pause, speed_scale=settings.speed,
-            volume_scale=settings.volume, split_sentence_ends=settings.split_sentences,
-        )
-    if speakers is None:
+        return OpenAICompatEngine(base_url=settings.url, model=settings.model.strip() or "kokoro",
+                                  api_key=settings.api_key.strip())
+    return VoicevoxEngine(base_url=settings.url)
+
+
+@dataclass
+class VoiceSpec:
+    """役の声。話者・スタイルは ID に解決済み。文に音声タグがない値はここから決まる。"""
+    voice: int | str          # VOICEVOX: スタイル ID / OpenAI互換: 声の ID
+    speed: float = 1.0
+    pitch: float = 0.0
+    intonation: float = 1.0
+    volume: float = 1.0
+    label: str = ""           # ログ表示用 (speaker=2 / voice=af_heart, model=kokoro)
+
+
+def create_voice(settings: Settings, speakers=None) -> VoiceSpec:
+    """設定の話者 (名前) を解決して、役の声を作る。speakers は取得済みの話者一覧 (None なら取得する)。"""
+    if speakers is None and not (settings.engine == "openai" and settings.speaker):
         speakers = fetch_speakers(settings)
-    speaker_id, _, _ = resolve_voicevox_style(speakers, settings.speaker, settings.style)
-    return VoicevoxEngine(
-        speaker_id=speaker_id, base_url=settings.url, pause_sec=settings.pause,
-        speed_scale=settings.speed, pitch_scale=settings.pitch, intonation_scale=settings.intonation,
-        volume_scale=settings.volume, split_sentence_ends=settings.split_sentences,
-    )
+    if settings.engine == "openai":
+        voice = settings.speaker or resolve_openai_voice(speakers, "")
+        label = f"voice={voice}, model={settings.model.strip() or 'kokoro'}"
+    else:
+        voice, _, _ = resolve_voicevox_style(speakers, settings.speaker, settings.style)
+        label = f"speaker={voice}"
+    return VoiceSpec(voice=voice, speed=settings.speed, pitch=settings.pitch,
+                     intonation=settings.intonation, volume=settings.volume, label=label)
 
 
-def engine_description(settings: Settings, engine: TTSEngine) -> str:
-    """ログ表示用の話者の説明。"""
-    if isinstance(engine, OpenAICompatEngine):
-        return f"voice={engine.voice}, model={engine.model}"
-    return f"speaker={engine.speaker_id}"
+def voice_params(sentences: list[Sentence], voice: VoiceSpec) -> list[VoiceParams]:
+    """文ごとの声を決める: 文の音声タグ (<speed> など) があればその値、なければ役の値。"""
+    def pick(value, default):
+        return value if value is not None else default
+    return [VoiceParams(voice=voice.voice, speed=pick(s.speed, voice.speed), pitch=pick(s.pitch, voice.pitch),
+                        intonation=pick(s.intonation, voice.intonation), volume=pick(s.volume, voice.volume))
+            for s in sentences]
+
+
+def synthesize_notes(
+    engine: TTSEngine, text: str, voice: VoiceSpec, pause_sec: float = 0.5,
+    split_sentence_ends: bool = False, on_chunk=None,
+) -> tuple[bytes, list[Timing], list[tuple[int, float]]]:
+    """ノートのテキストから WAV を作り、各文のタイミングと <next> の位置も返す。
+
+    Args:
+        pause_sec: 文と文の間の無音 (<wait> の指定がない区切り)
+        split_sentence_ends: 行の途中の文末 (. ! ?) でも区切る
+        on_chunk: コールバック on_chunk(文の番号, 文の数, 字幕テキスト)
+
+    Returns:
+        (WAVバイナリ, [Timing, ...], [(sentence_index, char_ratio), ...])
+    """
+    if not text:
+        return b"", [], []
+    parsed = parse_notes(text, split_sentence_ends)
+    sentences = parsed.sentences
+    if not sentences:
+        return b"", [], []
+
+    # pauses の None をデフォルト pause_sec に置換
+    pauses = [g if g is not None else pause_sec for g in parsed.pauses]
+
+    def on_done(i: int):
+        if on_chunk:
+            on_chunk(i, len(sentences), sentences[i].display)
+
+    wav_chunks = engine.synthesize_sentences(sentences, voice_params(sentences, voice), on_done)
+    wav, timings = _concat_wav(wav_chunks, pauses=pauses, sentences=[s.display for s in sentences],
+                               leading_pause=parsed.leading_pause)
+    return wav, timings, parsed.next_positions
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +174,7 @@ def generate(
     output_path: str,
     selected_slides: set[int] | None = None,
     engine: TTSEngine | None = None,
+    voice: VoiceSpec | None = None,
     on_progress: Callable[[float], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
 ) -> bool:
@@ -132,6 +183,7 @@ def generate(
     Args:
         selected_slides: 生成するスライドの番号 (1始まり)。None なら全スライド
         engine: 作成済みのエンジン (None なら settings から作る)
+        voice: 役の声 (None なら settings の話者を解決する)
         on_progress: 進捗 (0〜1) を受け取るコールバック
         should_cancel: True を返すと中断する (Cancelled を送出)
 
@@ -148,6 +200,8 @@ def generate(
 
     if engine is None:
         engine = create_engine(settings)
+    if voice is None:
+        voice = create_voice(settings)
 
     # スライド読み込み
     print(t("log_reading_pptx", path=input_path))
@@ -166,7 +220,7 @@ def generate(
     print(t("log_notes_count", n=notes_count))
 
     # 音声合成
-    print(t("log_synthesizing", desc=engine_description(settings, engine), pause=settings.pause))
+    print(t("log_synthesizing", desc=voice.label, pause=settings.pause))
 
     slide_audio = []
     slide_timings = {}
@@ -190,7 +244,8 @@ def generate(
 
             # 字幕オフでも <next> の発火タイミング計算に文のタイミングが必要なため、
             # 常にタイミング付きで合成する
-            wav, timings, next_pos = engine.synthesize_with_timings(info.notes_text, on_chunk=on_chunk)
+            wav, timings, next_pos = synthesize_notes(engine, info.notes_text, voice, settings.pause,
+                                                      settings.split_sentences, on_chunk=on_chunk)
             slide_timings[info.index] = timings
             if next_pos:
                 slide_next_positions[info.index] = next_pos

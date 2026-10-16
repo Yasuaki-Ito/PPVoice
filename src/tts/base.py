@@ -1,75 +1,50 @@
-"""TTSエンジンの抽象基底クラス"""
+"""TTSエンジンの抽象基底クラスと、合成の流れで受け渡すデータ"""
 
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from typing import Callable
 
-from notes import Sentence, parse_notes
+from notes import Sentence
 
-from .wav import _concat_wav
+
+@dataclass
+class VoiceParams:
+    """文ごとに確定した声。役の設定と文の音声タグから pipeline が決め、エンジンはこのとおりに合成する。"""
+    voice: int | str          # VOICEVOX: スタイル ID / OpenAI互換: 声の ID
+    speed: float = 1.0
+    pitch: float = 0.0
+    intonation: float = 1.0
+    volume: float = 1.0
+
+
+@dataclass
+class Timing:
+    """1文の字幕の表示区間。"""
+    text: str                 # 字幕テキスト (notes._to_display の出力)
+    start_ms: int
+    dur_ms: int
+    speaker: str | None = None  # 役 (複数話者用。None は既定の役)
 
 
 class TTSEngine(ABC):
     """音声合成エンジンの共通インターフェース
 
-    ノートの解析 → 文ごとの合成 → 結合・タイミング計算 の流れは共通で、
-    各エンジンは synthesize_sentences() だけを実装する。
+    エンジンはサーバ (URL など) だけを持ち、声は文ごとに VoiceParams で受け取る。
+    ノートの解析 → 文ごとの合成 → 結合・タイミング計算の流れは pipeline.synthesize_notes にある。
     """
-
-    def __init__(self, pause_sec: float = 0.5, split_sentence_ends: bool = False):
-        self.pause_sec = pause_sec
-        # 行の途中の文末 (. ! ?) でも文を区切る (英語の段落向け)
-        self.split_sentence_ends = split_sentence_ends
 
     @abstractmethod
     def synthesize_sentences(
-        self, sentences: list[Sentence], on_done: Callable[[int], None] | None = None,
+        self, sentences: list[Sentence], params: list[VoiceParams],
+        on_done: Callable[[int], None] | None = None,
     ) -> list[bytes]:
-        """解析済みの各文を合成し、文と同じ順序の WAV バイナリのリストを返す。
+        """解析済みの各文を、文ごとの声 (params[i]) で合成し、文と同じ順序の WAV バイナリのリストを返す。
 
         すべての WAV は同じフォーマット (サンプルレート・チャンネル数・サンプル幅) であること。
 
         Args:
             sentences: 解析済みの文 (sentence.reading を読み上げる)
+            params: 文ごとの声 (sentences と同じ長さ)
             on_done: 文 i の合成 (またはその準備) が終わるたびに on_done(i) を呼ぶ (進捗表示用)
         """
         ...
-
-    def synthesize_with_timings(
-        self, text: str, on_chunk=None,
-    ) -> tuple[bytes, list[tuple[str, int, int]], list[tuple[int, float]]]:
-        """ノートのテキストからWAV音声を生成し、各文のタイミング情報も返す。
-
-        Args:
-            on_chunk: コールバック on_chunk(chunk_index, total, sentence_text)
-
-        Returns:
-            (WAVバイナリ, [(文テキスト, 開始ms, 長さms), ...],
-             [(sentence_index, char_ratio), ...])
-        """
-        if not text:
-            return b"", [], []
-
-        parsed = parse_notes(text, self.split_sentence_ends)
-        sentences = parsed.sentences
-        if not sentences:
-            return b"", [], []
-
-        # pauses の None をデフォルト pause_sec に置換
-        pauses = [g if g is not None else self.pause_sec for g in parsed.pauses]
-
-        def on_done(i: int):
-            if on_chunk:
-                on_chunk(i, len(sentences), sentences[i].display)
-
-        wav_chunks = self.synthesize_sentences(sentences, on_done)
-
-        wav, timings = _concat_wav(
-            wav_chunks, pauses=pauses, sentences=[s.display for s in sentences],
-            leading_pause=parsed.leading_pause,
-        )
-        return wav, timings, parsed.next_positions
-
-    def synthesize(self, text: str, on_chunk=None) -> bytes:
-        """ノートのテキストからWAV音声を生成する。"""
-        wav, _, _ = self.synthesize_with_timings(text, on_chunk=on_chunk)
-        return wav

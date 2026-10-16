@@ -115,12 +115,12 @@ def cmd_generate(args) -> dict:
         raise CliError(f"output already exists (use --force to overwrite): {output}")
     settings = load_settings(args, args.input)
     try:
-        speakers = pipeline.fetch_speakers(settings)
-        engine = pipeline.create_engine(settings, speakers=speakers)
+        engine = pipeline.create_engine(settings)
         # ログは stderr へ (結果だけを stdout に出すため)
         with contextlib.redirect_stdout(sys.stderr):
+            voice = pipeline.create_voice(settings)
             done = pipeline.generate(settings, args.input, output, selected_slides=parse_slides(args.slides),
-                                     engine=engine)
+                                     engine=engine, voice=voice)
     except requests.RequestException as e:
         raise server_error(settings, e)
     except ValueError as e:
@@ -131,7 +131,7 @@ def cmd_generate(args) -> dict:
             raise CliError(str(e).strip(), EXIT_SERVER)
         raise
     return {"output": os.path.abspath(output) if done else None, "generated": done,
-            "engine": settings.engine, "voice": pipeline.engine_description(settings, engine)}
+            "engine": settings.engine, "voice": voice.label}
 
 
 def cmd_check(args) -> dict:

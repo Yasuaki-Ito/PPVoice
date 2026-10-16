@@ -2,7 +2,7 @@
 
 GUI と CLI の両方で使う。GUI はウィジェット ⇔ Settings の変換だけを行う。
 話者は名前で持ち (VOICEVOX: 話者名とスタイル名 / OpenAI互換: 声の ID)、ID への解決は
-エンジンを作るとき (pipeline.create_engine) に行う。
+声を作るとき (pipeline.create_voice) に行う。
 """
 
 import re

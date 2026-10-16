@@ -871,11 +871,10 @@ class App(_AppBase):
             self.pitch_row.pack_forget()
             self.intonation_row.pack_forget()
 
-    def _create_engine(self):
-        """現在の GUI 設定から TTS エンジンを作成する (取得済みの話者一覧を使う)。"""
-        settings = self._settings_from_ui()
+    def _create_engine(self, settings: Settings):
+        """設定から TTS エンジンと役の声を作る (取得済みの話者一覧を使う)。"""
         speakers = self._speakers_cache if settings.engine == "voicevox" else self._openai_voices
-        return pipeline.create_engine(settings, speakers=speakers)
+        return pipeline.create_engine(settings), pipeline.create_voice(settings, speakers=speakers)
 
     def _current_voice_id(self) -> str:
         """OpenAI互換で選択中の声の ID。"""
@@ -1077,19 +1076,21 @@ class App(_AppBase):
             self._log(t("log_fetch_first"))
             return
 
-        engine = self._create_engine()
+        settings = self._settings_from_ui()
+        engine, voice = self._create_engine(settings)
 
         self.test_play_btn.configure(text=t("synthesizing"), state="disabled")
         thread = threading.Thread(
             target=self._test_play_worker,
-            args=(text, engine),
+            args=(text, settings, engine, voice),
             daemon=True,
         )
         thread.start()
 
-    def _test_play_worker(self, text, engine):
+    def _test_play_worker(self, text, settings, engine, voice):
         try:
-            wav, timings, _ = engine.synthesize_with_timings(text)
+            wav, timings, _ = pipeline.synthesize_notes(engine, text, voice, settings.pause,
+                                                        settings.split_sentences)
             self.after(0, lambda: self.test_play_btn.configure(text=t("stop_play"), state="normal"))
 
             # 字幕を再生タイミングに合わせてログに表示
@@ -1118,16 +1119,16 @@ class App(_AppBase):
         """再生タイミングに合わせて字幕テキストをログに表示する。"""
         import time
         t0 = time.perf_counter()
-        for disp_text, start_ms, _dur_ms in timings:
+        for timing in timings:
             if self._test_stop:
                 return
             # 開始タイミングまで待つ
-            wait = start_ms / 1000.0 - (time.perf_counter() - t0)
+            wait = timing.start_ms / 1000.0 - (time.perf_counter() - t0)
             if wait > 0:
                 time.sleep(wait)
             if self._test_stop:
                 return
-            clean = self._STRIP_TAGS.sub("", disp_text)
+            clean = self._STRIP_TAGS.sub("", timing.text)
             clean = _unescape_display(clean)
             self.after(0, lambda t=clean: self._log(f"  {t}\n"))
 
@@ -1503,10 +1504,12 @@ class App(_AppBase):
         if not output_path:
             output_path = os.path.splitext(input_path)[0] + "_speech.pptx"
 
+        settings = self._settings_from_ui()
+        engine, voice = self._create_engine(settings)
         if pipeline.generate(
-            self._settings_from_ui(), input_path, output_path,
+            settings, input_path, output_path,
             selected_slides=self._selected_slides,
-            engine=self._create_engine(),
+            engine=engine, voice=voice,
             on_progress=lambda v: self.after(0, self.progress.set, v),
             should_cancel=self._cancel_event.is_set,
         ):

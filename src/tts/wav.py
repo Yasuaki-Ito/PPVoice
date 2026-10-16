@@ -3,6 +3,8 @@
 import io
 import wave
 
+from .base import Timing
+
 
 def _make_silence(params, duration_sec: float) -> bytes:
     """指定秒数の無音フレームデータを返す。"""
@@ -15,7 +17,7 @@ def _concat_wav(
     pauses: list[float],
     sentences: list[str] | None = None,
     leading_pause: float = 0.0,
-) -> tuple[bytes, list[tuple[str, int, int]]]:
+) -> tuple[bytes, list[Timing]]:
     """複数のWAVバイナリを1つに結合する。
 
     Args:
@@ -23,11 +25,14 @@ def _concat_wav(
         leading_pause: 最初のチャンクの前に挿入する無音秒数
 
     Returns:
-        (結合WAV, [(文テキスト, 開始ms, 長さms), ...])
+        (結合WAV, [Timing(文テキスト, 開始ms, 長さms), ...])
+
+    Raises:
+        ValueError: WAV のフォーマット (サンプルレート・チャンネル数・サンプル幅) がそろっていない
     """
     all_frames = b""
     params = None
-    timings: list[tuple[str, int, int]] = []
+    timings: list[Timing] = []
     current_ms = 0
 
     for i, chunk in enumerate(wav_chunks):
@@ -39,11 +44,16 @@ def _concat_wav(
                     if leading_pause > 0:
                         all_frames += _make_silence(params, leading_pause)
                         current_ms += int(leading_pause * 1000)
+                elif (w.getnchannels(), w.getsampwidth(), w.getframerate()) != \
+                        (params.nchannels, params.sampwidth, params.framerate):
+                    raise ValueError(
+                        f"WAV format mismatch: {w.getnchannels()}ch/{w.getsampwidth() * 8}bit/{w.getframerate()}Hz "
+                        f"vs {params.nchannels}ch/{params.sampwidth * 8}bit/{params.framerate}Hz")
                 frames = w.readframes(w.getnframes())
                 chunk_ms = int(w.getnframes() / w.getframerate() * 1000)
 
         if sentences:
-            timings.append((sentences[i], current_ms, chunk_ms))
+            timings.append(Timing(sentences[i], current_ms, chunk_ms))
 
         all_frames += frames
         current_ms += chunk_ms

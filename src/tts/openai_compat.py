@@ -17,7 +17,7 @@ import requests
 from i18n import t
 from notes import Sentence
 
-from .base import TTSEngine
+from .base import TTSEngine, VoiceParams
 
 # OpenAI の pcm 形式 (Kokoro-FastAPI も同じ)
 PCM_SAMPLE_RATE = 24000
@@ -102,43 +102,35 @@ class OpenAICompatEngine(TTSEngine):
     # VOICEVOX 専用で、このエンジンでは使えない機能
     UNSUPPORTED = ("pitch", "intonation", "accent")
 
-    def __init__(self, voice: str, base_url: str = "http://localhost:8880/v1",
-                 model: str = "kokoro", api_key: str = "",
-                 pause_sec: float = 0.5, speed_scale: float = 1.0, volume_scale: float = 1.0,
-                 max_workers: int = 2, timeout: float = 120, split_sentence_ends: bool = True):
-        super().__init__(pause_sec=pause_sec, split_sentence_ends=split_sentence_ends)
-        self.voice = voice
+    def __init__(self, base_url: str = "http://localhost:8880/v1", model: str = "kokoro", api_key: str = "",
+                 max_workers: int = 2, timeout: float = 120):
         self.base_url = base_url.rstrip("/")
         self.model = model
         self.api_key = api_key
-        self.speed_scale = speed_scale
-        self.volume_scale = volume_scale
-        self.max_workers = max_workers
+        self.max_workers = max_workers  # 役の数に関係なく全文で共有 (クラウドのレート制限のため少なめ)
         self.timeout = timeout
 
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
-    def _speech(self, s: Sentence) -> bytes:
-        """1文を合成して WAV を返す。"""
-        speed = s.speed if s.speed is not None else self.speed_scale
+    def _speech(self, s: Sentence, p: VoiceParams) -> bytes:
+        """1文を合成して WAV を返す (声は p.voice = 声の ID)。"""
         resp = requests.post(
             f"{self.base_url}/audio/speech",
             headers=self._headers(),
             json={
                 "model": self.model,
                 "input": s.reading,
-                "voice": self.voice,
+                "voice": p.voice,
                 "response_format": "pcm",
-                "speed": speed,
+                "speed": p.speed,
                 "stream": False,
             },
             timeout=self.timeout,
         )
         if not resp.ok:
             raise TTSServerError(self._error_message(resp, s))
-        volume = s.volume if s.volume is not None else self.volume_scale
-        return _pcm_to_wav(_scale_pcm(resp.content, volume))
+        return _pcm_to_wav(_scale_pcm(resp.content, p.volume))
 
     @staticmethod
     def _error_message(resp: requests.Response, s: Sentence) -> str:
@@ -159,10 +151,11 @@ class OpenAICompatEngine(TTSEngine):
             text += t("hint_no_speakable")
         return text + t("hint_server_log")
 
-    def synthesize_sentences(self, sentences: list[Sentence], on_done=None) -> list[bytes]:
+    def synthesize_sentences(self, sentences: list[Sentence], params: list[VoiceParams],
+                             on_done=None) -> list[bytes]:
         self._warn_unsupported(sentences)
         with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
-            futures = [pool.submit(self._speech, s) for s in sentences]
+            futures = [pool.submit(self._speech, s, p) for s, p in zip(sentences, params)]
             wavs = []
             for i, future in enumerate(futures):
                 wavs.append(future.result())

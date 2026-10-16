@@ -23,6 +23,7 @@ import pipeline
 from pptx_reader import read_slides
 from settings import DEFAULT_URLS, ENGINES, Settings
 from tts.openai_compat import KOKORO_LANG_CODES, group_voices, voice_short_name
+import update_check
 from cache import SynthCache
 from version import __version__
 import i18n
@@ -133,6 +134,18 @@ class App(_AppBase):
         self._build_ui()
         self._setup_dnd()
         self._update_run_btn()
+        self._start_update_check()
+
+    def _start_update_check(self):
+        """新しいバージョンがあればログに知らせる (配布版のみ。ユーザー設定 check_updates でオフにできる)。"""
+        if not getattr(sys, "frozen", False) or not i18n.get_user_setting("check_updates", True):
+            return
+
+        def worker():
+            found = update_check.check(__version__)
+            if found:
+                self.after(0, lambda: self._log(t("log_update_available", version=found[0], url=found[1])))
+        threading.Thread(target=worker, daemon=True).start()
 
     def _setup_dnd(self):
         """ドラッグ&ドロップを設定する (tkinterdnd2)。"""

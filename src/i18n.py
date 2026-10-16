@@ -200,6 +200,8 @@ STRINGS: dict[str, tuple[str, str]] = {
     "lint_style_ignored": ("OpenAI互換のエンジンでは <style> は無視されます",
                            "<style> is ignored with OpenAI-compatible engines"),
     "log_cache_used": ("    (前回の合成結果を使用)", "    (using the previous result)"),
+    "log_update_available": ("新しいバージョン {version} があります: {url}\n",
+                             "A new version {version} is available: {url}\n"),
     "log_lint_header": ("\nノートの確認:", "\nNote check:"),
     "log_lint_issue": ("  スライド {slide} (行 {line}): {message}", "  Slide {slide} (line {line}): {message}"),
     "log_config_invalid": ("<config> の {key}={value} は値の形式が違うため無視しました。\n",
@@ -297,26 +299,35 @@ def _settings_path() -> str:
     return os.path.join(base, "PPVoice", "settings.json")
 
 
-def load_language():
-    """保存された言語を読み込む。なければ OS の表示言語を使う。"""
+def get_user_setting(key: str, default=None):
+    """ユーザー設定の値 (なければ default)。"""
     try:
         with open(_settings_path(), encoding="utf-8") as f:
-            lang = json.load(f).get("language")
-    except (OSError, ValueError):
-        lang = None
-    set_language(lang if lang in LANGUAGES else detect_os_language())
+            return json.load(f).get(key, default)
+    except (OSError, ValueError, AttributeError):
+        return default
 
 
-def save_language(lang: str):
+def set_user_setting(key: str, value):
     path = _settings_path()
     try:
         settings = {}
         if os.path.exists(path):
             with open(path, encoding="utf-8") as f:
                 settings = json.load(f)
-        settings["language"] = lang
+        settings[key] = value
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             json.dump(settings, f, ensure_ascii=False, indent=2)
     except (OSError, ValueError):
         pass
+
+
+def load_language():
+    """保存された言語を読み込む。なければ OS の表示言語を使う。"""
+    lang = get_user_setting("language")
+    set_language(lang if lang in LANGUAGES else detect_os_language())
+
+
+def save_language(lang: str):
+    set_user_setting("language", lang)

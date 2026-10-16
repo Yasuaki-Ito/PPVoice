@@ -113,6 +113,8 @@ STRINGS: dict[str, tuple[str, str]] = {
                                   "The default role cannot be deleted. Make another role the default first.\n"),
     "log_tag_copied": ("{tag} をコピーしました。ノートに貼り付けて使います。\n",
                        "Copied {tag}. Paste it into the notes.\n"),
+    "test_hint": ("<speaker> のない行は、既定の役「{name}」が読みます (役ごとの声は一覧の ▶ で確認)",
+                  "Lines without <speaker> are read by the default role \"{name}\" (▶ in the list plays each role)"),
     "pauses": ("間 (秒)", "Pauses (s)"),
     "pause_sentence": ("文", "Sentence"),
     "turn_pause": ("話者交代", "Turn"),

@@ -161,6 +161,10 @@ class VoiceTab(ctk.CTkFrame):
         self.test_textbox.pack(side="left", fill="x", expand=True, padx=(4, 6))
         self.test_play_btn = ctk.CTkButton(r, text=t("play"), width=80, command=self.test_play, state="disabled")
         self.test_play_btn.pack(side="left", anchor="n")
+        # テスト欄で <speaker> のない行を誰が読むか (一覧で選んだ役ではなく、既定の役)
+        r = w.row(self, pady=(0, 2))
+        self.test_hint = w.hint(r, "")
+        self.test_hint.pack(side="left", padx=(74, 0))
 
         # VOICEVOX の利用規約 (VOICEVOX のみ)
         self.terms_row = r = ctk.CTkFrame(self, fg_color="transparent")
@@ -492,6 +496,8 @@ class VoiceTab(ctk.CTkFrame):
                 side="left", padx=(2, 4), pady=2)
             for widget in (rf, swatch, name):
                 widget.bind("<Button-1>", lambda e, i=i: self.select_role(i))
+        default_name = self.roles[self.default_idx].name or "-"
+        self.test_hint.configure(text=t("test_hint", name=default_name))
         for name in self.undefined_roles():
             rf = ctk.CTkFrame(self.role_list, fg_color="transparent")
             rf.pack(fill="x", pady=1)

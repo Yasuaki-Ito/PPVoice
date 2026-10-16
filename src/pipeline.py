@@ -8,10 +8,11 @@ from dataclasses import dataclass, field
 from typing import Callable
 
 from i18n import t
+from lint import Issue, lint_notes
 from notes import _BRACE_PATTERN, _NEXT_TAG, _READING_PATTERN, Sentence, parse_notes
 from pptx_reader import read_slides
 from pptx_writer import _extract_click_groups, embed_audio
-from settings import Settings, parse_cast_tags, parse_config_tags
+from settings import Settings, parse_cast_tags, parse_config_tags, parse_dict_tags
 from tts.base import Timing, TTSEngine, VoiceParams
 from tts.openai_compat import OpenAICompatEngine, voice_short_name
 from tts.voicevox import VoicevoxEngine
@@ -45,6 +46,11 @@ def read_config(input_path: str) -> dict[str, str]:
 def read_cast(input_path: str) -> dict[str, dict[str, str]]:
     """PPTX のノートにある <cast> タグを解析する。"""
     return parse_cast_tags([s.notes_text for s in read_slides(input_path) if s.notes_text])
+
+
+def read_dict(input_path: str) -> dict[str, str]:
+    """PPTX のノートにある <dict> タグを解析する。"""
+    return parse_dict_tags([s.notes_text for s in read_slides(input_path) if s.notes_text])
 
 
 def default_role_name(settings: Settings) -> str:
@@ -140,6 +146,29 @@ class Cast:
     speakers_used: dict[str, None] = field(default_factory=dict)  # 使った話者名 (順序付きの集合)
     _warned: set = field(default_factory=set)
 
+    @property
+    def names(self) -> set[str]:
+        return {self.default.name, *self.roles}
+
+    @property
+    def styles(self) -> dict[str, set[str]] | None:
+        """役名 → その話者のスタイル名 (VOICEVOX のみ)。"""
+        if self.engine == "openai":
+            return None
+        return {name: set(v.styles) for name, v in {self.default.name: self.default, **self.roles}.items()}
+
+    def lint(self, text: str) -> list[Issue]:
+        """ノートを確認する。役とスタイルの問題は、合成のときに同じ警告を出さないようにする。"""
+        issues = lint_notes(text, self.names, self.default.name, self.styles, self.engine)
+        for issue in issues:
+            if issue.kind == "undefined_role":
+                self._warned.add(("role", issue.role))
+            elif issue.kind == "unknown_style":
+                self._warned.add(("style", issue.role, issue.style))
+            elif issue.kind == "style_ignored":
+                self._warned.add(("style",))
+        return issues
+
     def warn(self, key, message: str):
         if key not in self._warned:
             self._warned.add(key)
@@ -222,6 +251,7 @@ def voice_params(sentences: list[Sentence], cast: Cast) -> list[VoiceParams]:
 def synthesize_notes(
     engine: TTSEngine, text: str, cast: Cast, pause_sec: float = 0.5,
     split_sentence_ends: bool = False, on_chunk=None, turn_pause: float | None = None,
+    dictionary: dict[str, str] | None = None,
 ) -> tuple[bytes, list[Timing], list[tuple[int, float]]]:
     """ノートのテキストから WAV を作り、各文のタイミングと <next> の位置も返す。
 
@@ -230,13 +260,14 @@ def synthesize_notes(
         split_sentence_ends: 行の途中の文末 (. ! ?) でも区切る
         on_chunk: コールバック on_chunk(文の番号, 文の数, 字幕テキスト)
         turn_pause: 役が替わる区切りの無音 (None なら pause_sec)
+        dictionary: 読みの辞書 (<dict>)
 
     Returns:
         (WAVバイナリ, [Timing, ...], [(sentence_index, char_ratio), ...])
     """
     if not text:
         return b"", [], []
-    parsed = parse_notes(text, split_sentence_ends)
+    parsed = parse_notes(text, split_sentence_ends, dictionary)
     sentences = parsed.sentences
     if not sentences:
         return b"", [], []
@@ -327,6 +358,13 @@ def generate(
         return None
     print(t("log_notes_count", n=notes_count))
 
+    # ノートの書き間違い (生成は止めない)
+    issues = [(info.index + 1, issue) for info in slides if info.notes_text for issue in cast.lint(info.notes_text)]
+    if issues:
+        print(t("log_lint_header"))
+        for slide_num, issue in issues:
+            print(t("log_lint_issue", slide=slide_num, line=issue.line, message=issue.message))
+
     # 音声合成
     print(t("log_synthesizing", desc=cast.label, pause=settings.pause))
 
@@ -354,7 +392,8 @@ def generate(
             # 常にタイミング付きで合成する
             wav, timings, next_pos = synthesize_notes(engine, info.notes_text, cast, settings.pause,
                                                       settings.split_sentences, on_chunk=on_chunk,
-                                                      turn_pause=settings.turn_pause)
+                                                      turn_pause=settings.turn_pause,
+                                                      dictionary=settings.dictionary)
             slide_timings[info.index] = timings
             if next_pos:
                 slide_next_positions[info.index] = next_pos

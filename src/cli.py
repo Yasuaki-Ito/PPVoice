@@ -23,6 +23,7 @@ import requests  # noqa: E402
 
 import i18n  # noqa: E402
 import pipeline  # noqa: E402
+from lint import lint_notes  # noqa: E402
 from notes import parse_notes  # noqa: E402
 from pptx_reader import read_slides  # noqa: E402
 from settings import DEFAULT_URLS, ENGINES, Settings, parse_config_tags  # noqa: E402
@@ -66,6 +67,7 @@ def load_settings(args, input_path: str | None) -> Settings:
         for name, values in pipeline.read_cast(input_path).items():
             settings.apply_cast({name: values}, warn=lambda k, v, name=name: print(
                 i18n.t("log_cast_invalid", name=name, key=k, value=v), file=sys.stderr))
+        settings.dictionary = pipeline.read_dict(input_path)
     if getattr(args, "engine", None):
         settings.set_engine(args.engine)
     overrides = {}
@@ -145,15 +147,31 @@ def cmd_check(args) -> dict:
     slides = read_slides(args.input)
     next_checks = {c.slide: c for c in pipeline.check_next_tags(args.input)}
     default_role = pipeline.default_role_name(settings)
+    # 話者の一覧 (サーバにつながる場合だけ)。スタイル名の確認にも使う
+    try:
+        speakers = pipeline.fetch_speakers(settings)
+        server = True
+    except requests.RequestException:
+        speakers, server = None, False
+    role_names = {default_role, *settings.cast}
+    styles = None
+    if server and settings.engine == "voicevox":
+        by_speaker = {sp["name"]: {st["name"] for st in sp.get("styles", [])} for sp in speakers}
+        styles = {default_role: by_speaker.get(settings.speaker, set())}
+        styles.update({r.name: by_speaker.get(r.speaker, set()) for r in settings.cast.values()})
+        styles = {name: st for name, st in styles.items() if st}
     roles: dict[str, int] = {}   # 役名 → 文の数 (ノートに出てくる順)
+    dict_hits = {word: 0 for word in settings.dictionary}  # 辞書の語 → 当たった回数
     result_slides = []
     for si in slides:
         num = si.index + 1
         if selected is not None and num not in selected:
             continue
-        parsed = parse_notes(si.notes_text, settings.split_sentences) if si.notes_text else None
+        parsed = parse_notes(si.notes_text, settings.split_sentences, settings.dictionary) if si.notes_text else None
         c = next_checks[num]
         sentences = parsed.sentences if parsed else []
+        for word, n in (parsed.dict_hits if parsed else {}).items():
+            dict_hits[word] += n
         for s in sentences:
             name = s.speaker or default_role
             roles[name] = roles.get(name, 0) + 1
@@ -162,14 +180,10 @@ def cmd_check(args) -> dict:
             "sentences": [{"subtitle": pipeline._unescape_display(s.display), "reading": s.reading,
                            "role": s.speaker or default_role, "style": s.style} for s in sentences],
             "animations": c.animations, "next": c.nexts, "next_status": c.status.strip(" ←"),
+            "issues": [{"line": i.line, "kind": i.kind, "tag": i.text, "message": i.message}
+                       for i in lint_notes(si.notes_text, role_names, default_role, styles, settings.engine)]
+            if si.notes_text else [],
         })
-    # 話者が一覧にあるか (サーバにつながる場合だけ)
-    try:
-        speakers = pipeline.fetch_speakers(settings)
-        server = True
-    except requests.RequestException:
-        speakers, server = None, False
-
     def available(speaker: str, style: str):
         if not server or not speaker:
             return None
@@ -190,7 +204,9 @@ def cmd_check(args) -> dict:
     undefined = [name for name in roles if name not in defined]
     return {"engine": settings.engine, "url": settings.url, "config": parse_config_tags(
         [s.notes_text for s in slides if s.notes_text]), "speaker_check": speaker_check, "cast": cast,
-        "undefined_roles": undefined, "slides": result_slides}
+        "undefined_roles": undefined, "dictionary": [{"word": w, "reading": r, "hits": dict_hits.get(w, 0)}
+                                                      for w, r in settings.dictionary.items()],
+        "slides": result_slides}
 
 
 def cmd_speakers(args) -> dict:
@@ -232,11 +248,15 @@ def print_text(command: str, result: dict):
                       f"{' / ' + c['style'] if c['style'] else ''} [{ok}], {c['sentences']} sentences")
             for name in result["undefined_roles"]:
                 print(f"role {name}: not defined (read by the default role)")
+        for d in result["dictionary"]:
+            print(f"dict {d['word']} = {d['reading']}: {d['hits']} hits")
         for sl in result["slides"]:
             note = f"  ({sl['next_status']})" if sl["next_status"] else ""
             print(f"--- slide {sl['slide']}: {len(sl['sentences'])} sentences, "
                   f"<next> {sl['next']} / animations {sl['animations']}{note}")
             multi = len(result["cast"]) > 1 or result["undefined_roles"]
+            for issue in sl["issues"]:
+                print(f"  ! line {issue['line']}: {issue['message']}")
             for s in sl["sentences"]:
                 role = f"{s['role']}{'/' + s['style'] if s['style'] else ''}: " if multi else ""
                 print(f"  {role}{s['subtitle']}"

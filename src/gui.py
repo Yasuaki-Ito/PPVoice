@@ -125,7 +125,7 @@ class App(_AppBase):
         # 選びたい話者 (話者名, スタイル名)。OpenAI互換は (声の ID, "")。
         # 話者一覧を取得したときに、この名前の話者を選ぶ
         self._wanted_voice: tuple[str, str] = ("", "")
-        # 画面にまだ欄のない設定 (役・話者交代の間)。<config> / <cast> から読み、そのまま保存・生成に使う
+        # 画面にまだ欄のない設定 (役・話者交代の間・辞書)。<config> / <cast> / <dict> から読み、そのまま保存・生成に使う
         self._voice_extra = Settings()
         self._test_stop = False
 
@@ -685,15 +685,17 @@ class App(_AppBase):
         # 入力ファイルを指定するたびに出力ファイル名も追従させる
         base = os.path.splitext(path)[0]
         self.output_var.set(base + "_speech.pptx")
-        # <config> / <cast> タグの自動読み込み (役はファイルごとに読み直す)
+        # <config> / <cast> / <dict> タグの自動読み込み (役と辞書はファイルごとに読み直す)
         try:
             config = pipeline.read_config(path)
             casts = pipeline.read_cast(path)
             self._voice_extra.cast = {}
-            if config or casts:
+            self._voice_extra.dictionary = pipeline.read_dict(path)
+            if config or casts or self._voice_extra.dictionary:
                 self._apply_config(config, casts)
                 details = "\n".join([f"  {k}={v}" for k, v in config.items()]
-                                    + [f"  <cast {name}>" for name in casts])
+                                    + [f"  <cast {name}>" for name in casts]
+                                    + [f"  <dict> {w}={r}" for w, r in self._voice_extra.dictionary.items()])
                 self._log(t("log_config_loaded", details=details))
         except Exception:
             pass
@@ -1095,7 +1097,8 @@ class App(_AppBase):
     def _test_play_worker(self, text, settings, engine, cast):
         try:
             wav, timings, _ = pipeline.synthesize_notes(engine, text, cast, settings.pause,
-                                                        settings.split_sentences, turn_pause=settings.turn_pause)
+                                                        settings.split_sentences, turn_pause=settings.turn_pause,
+                                                        dictionary=settings.dictionary)
             self.after(0, lambda: self.test_play_btn.configure(text=t("stop_play"), state="normal"))
 
             # 字幕を再生タイミングに合わせてログに表示
@@ -1187,6 +1190,7 @@ class App(_AppBase):
         s.role = self._voice_extra.role
         s.cast = dict(self._voice_extra.cast)
         s.turn_pause = self._voice_extra.turn_pause
+        s.dictionary = dict(self._voice_extra.dictionary)
         return s
 
     def _load_settings_to_ui(self, s: Settings):
@@ -1230,6 +1234,7 @@ class App(_AppBase):
         self._voice_extra.role = s.role
         self._voice_extra.cast = dict(s.cast)
         self._voice_extra.turn_pause = s.turn_pause
+        self._voice_extra.dictionary = dict(s.dictionary)
         # 話者は名前で選ぶ (一覧を取得していなければ、取得したときに選ぶ)
         self._wanted_voice = (s.speaker, s.style)
         if self._speaker_map:
@@ -1295,7 +1300,7 @@ class App(_AppBase):
     def _generate_config_tag(self) -> str:
         """現在の GUI 設定を <config ...> タグ (と役の数だけの <cast ...> タグ) の文字列として生成する。"""
         s = self._settings_from_ui()
-        return "\n".join([s.to_config_tag(), *s.to_cast_tags()])
+        return "\n".join(tag for tag in [s.to_config_tag(), *s.to_cast_tags(), s.to_dict_tag()] if tag)
 
     def _on_save_config(self):
         """設定保存ポップアップを表示する。"""

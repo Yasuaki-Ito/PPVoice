@@ -18,18 +18,18 @@ _BRACE_PATTERN = re.compile(r"\{([^|}]+)\}")
 
 # 書式タグパターン: <b>, </b>, <i>, </i>, <u>, </u>, <color=#RRGGBB>, </color>,
 # <font=...>, </font>, <size=N>, </size>, <br>, <wait=Ns>,
-# <speed=N>, <pitch=N>, <intonation=N>, <volume=N>, <config ...>, <cast ...>, <speaker=...>, <style=...>
+# <speed=N>, <pitch=N>, <intonation=N>, <volume=N>, <config ...>, <cast ...>, <dict ...>, <speaker=...>, <style=...>
 _FORMAT_TAG = re.compile(
     r"</?(?:b|i|u|color(?:=#[0-9a-fA-F]{6})?|font(?:=[^>]+)?|size(?:=[+\-]?\d+)?"
     r"|speed(?:=[\d.]+)?|pitch(?:=[+\-]?[\d.]+)?"
     r"|intonation(?:=[\d.]+)?|volume(?:=[\d.]+)?)>"
-    r"|<br\s*/?>|<wait=[\d.]+\s*(?:ms|s)?\s*>|<(?:config|cast)\s[^>]*>|<next\s*/?>"
+    r"|<br\s*/?>|<wait=[\d.]+\s*(?:ms|s)?\s*>|<(?:config|cast|dict)\s[^>]*>|<next\s*/?>"
     r"|<(?:speaker|style)=[^>]+>",
     re.IGNORECASE,
 )
 
-# <config ...> / <cast ...> タグ (資料全体の設定。読み上げ・字幕には影響しない)
-_CONFIG_TAG = re.compile(r"<(?:config|cast)\s[^>]*>", re.IGNORECASE)
+# <config ...> / <cast ...> / <dict ...> タグ (資料全体の設定。読み上げ・字幕には影響しない)
+_CONFIG_TAG = re.compile(r"<(?:config|cast|dict)\s[^>]*>", re.IGNORECASE)
 
 # <speaker=役名> (次の <speaker> まで続く。行の途中なら そこで文を区切る) と
 # <style=スタイル名> (その文だけ)。名前は日本語を含むので > 以外の文字。引用符は外す
@@ -69,6 +69,45 @@ _PUNCT_PH = {
     "。": "\x04", "．": "\x05", ".": "\x06",
     "、": "\x07", "，": "\x10", ",": "\x11",
 }
+
+
+# 辞書で書き換えない場所: 読み指定・{...}・タグ
+_DICT_PROTECT = re.compile(f"{_READING_PATTERN.pattern}|{_BRACE_PATTERN.pattern}|<[^<>]*>")
+_ASCII_WORD = re.compile(r"[A-Za-z0-9_]")
+
+
+def apply_dictionary(text: str, dictionary: dict[str, str]) -> tuple[str, dict[str, int]]:
+    """辞書の語を {語|読み} に書き換える (<dict> の前処理)。
+
+    読み指定・{...}・タグの中は書き換えない。長い語を先に当てる。英数字で始まる・終わる語は、
+    その側が単語の境界のときだけ当てる (GUI が GUIDE に当たらないように)。大文字・小文字は区別する。
+
+    Returns:
+        (書き換えたテキスト, {語: 当たった回数})
+    """
+    words = [w for w in dictionary if w and dictionary[w] and not any(c in w for c in "{}|<>")]
+    if not words:
+        return text, {}
+
+    def word_pattern(w: str) -> str:
+        head = r"(?<![A-Za-z0-9_])" if _ASCII_WORD.match(w[0]) else ""
+        tail = r"(?![A-Za-z0-9_])" if _ASCII_WORD.match(w[-1]) else ""
+        return head + re.escape(w) + tail
+
+    pattern = re.compile("|".join(word_pattern(w) for w in sorted(words, key=len, reverse=True)))
+    hits: dict[str, int] = {}
+
+    def replace(m):
+        hits[m.group(0)] = hits.get(m.group(0), 0) + 1
+        return "{" + m.group(0) + "|" + dictionary[m.group(0)] + "}"
+
+    out, last = [], 0
+    for m in _DICT_PROTECT.finditer(text):
+        out.append(pattern.sub(replace, text[last:m.start()]))
+        out.append(m.group(0))
+        last = m.end()
+    out.append(pattern.sub(replace, text[last:]))
+    return "".join(out), hits
 
 
 def _hira_to_kata(text: str) -> str:
@@ -335,6 +374,7 @@ class ParsedNotes:
     pauses: list[float | None]   # 各文の後の無音秒数 (None はデフォルト)
     leading_pause: float         # 最初の文の前の無音秒数
     next_positions: list[tuple[int, float]]  # <next> の位置 [(sentence_index, char_ratio), ...]
+    dict_hits: dict[str, int] = field(default_factory=dict)  # 辞書の語 → 当たった回数
 
 
 def _last_tag_value(pattern: re.Pattern, text: str) -> float | None:
@@ -349,14 +389,17 @@ def _last_tag_text(pattern: re.Pattern, text: str) -> str | None:
     return matches[-1] or None if matches else None
 
 
-def parse_notes(text: str, split_sentence_ends: bool = False) -> ParsedNotes:
+def parse_notes(text: str, split_sentence_ends: bool = False,
+                dictionary: dict[str, str] | None = None) -> ParsedNotes:
     """ノートのテキストを文単位に解析する。
 
     Args:
         split_sentence_ends: True なら行の途中の文末 (. ! ?) でも区切る
+        dictionary: 読みの辞書 (<dict>)。{語: 読み} (読みは {表示|読み|N} の読みと同じ書き方)
     """
-    # <config> / <cast> タグを事前除去 (configだけの行が空文にならないよう)
+    # <config> / <cast> / <dict> タグを事前除去 (configだけの行が空文にならないよう)
     text = _CONFIG_TAG.sub("", text)
+    text, dict_hits = apply_dictionary(text, dictionary or {})
     raw_sentences, pauses, leading_pause, next_positions, speakers = _split_sentences(text, split_sentence_ends)
     sentences = [
         Sentence(
@@ -373,4 +416,4 @@ def parse_notes(text: str, split_sentence_ends: bool = False) -> ParsedNotes:
         )
         for s, speaker in zip(raw_sentences, speakers)
     ]
-    return ParsedNotes(sentences, pauses, leading_pause, next_positions)
+    return ParsedNotes(sentences, pauses, leading_pause, next_positions, dict_hits)

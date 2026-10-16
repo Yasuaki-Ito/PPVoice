@@ -15,6 +15,8 @@ DEFAULT_URLS = {"voicevox": "http://localhost:50021", "openai": "http://localhos
 ENGINES = tuple(DEFAULT_URLS)
 
 _CONFIG_RE = re.compile(r"<config\s([^>]*)>", re.IGNORECASE)
+_DICT_RE = re.compile(r"<dict\s([^>]*)>", re.IGNORECASE)
+_DICT_KV_RE = re.compile(r'(?:"([^"]*)"|([^\s=">]+))=(?:"([^"]*)"|([^\s>]+))')
 _CAST_RE = re.compile(r'<cast\s+(?:"([^"]*)"|([^\s>="]+))([^>]*)>', re.IGNORECASE)
 _KV_RE = re.compile(r'([\w]+)=(?:"([^"]*)"|(\S+))')
 
@@ -43,6 +45,19 @@ def parse_cast_tags(notes_list: list[str]) -> dict[str, dict[str, str]]:
             for kv in _KV_RE.finditer(m.group(3)):
                 values[kv.group(1)] = kv.group(2) if kv.group(2) is not None else kv.group(3)
     return casts
+
+
+def parse_dict_tags(notes_list: list[str]) -> dict[str, str]:
+    """ノートのテキストのリストから <dict 語=読み ...> タグを解析する。同じ語は後の値が優先。"""
+    words: dict[str, str] = {}
+    for notes in notes_list:
+        for m in _DICT_RE.finditer(notes):
+            for kv in _DICT_KV_RE.finditer(m.group(1)):
+                word = kv.group(1) if kv.group(1) is not None else kv.group(2)
+                reading = kv.group(3) if kv.group(3) is not None else kv.group(4)
+                if word:
+                    words[word] = reading
+    return words
 
 
 def _quote(key: str, value) -> str:
@@ -113,6 +128,7 @@ class Settings:
     style: str = ""                  # VOICEVOX のスタイル名
     role: str = ""                   # 既定の役の名前 (<speaker=...> で使う)。空なら話者名
     cast: dict[str, Role] = field(default_factory=dict)  # <cast> で追加した役 (名前 → 役)
+    dictionary: dict[str, str] = field(default_factory=dict)  # <dict> の読みの辞書 (語 → 読み)
     # --- 音声 ---
     speed: float = 1.0
     pitch: float = 0.0
@@ -180,7 +196,7 @@ class Settings:
             self.style = ""
         types = {f.name: f.type for f in fields(self)}
         for key, value in config.items():
-            if key in ("engine", "urls", "api_key", "cast") or key not in types:
+            if key in ("engine", "urls", "api_key", "cast", "dictionary") or key not in types:
                 continue
             try:
                 kind = types[key]
@@ -208,6 +224,14 @@ class Settings:
     def to_cast_tags(self) -> list[str]:
         """<cast ...> タグの文字列のリスト (役の数だけ)。"""
         return [role.to_tag() for role in self.cast.values()]
+
+    def to_dict_tag(self) -> str:
+        """<dict ...> タグの文字列 (辞書が空なら空文字列)。"""
+        def q(s: str) -> str:
+            return f'"{s}"' if not s or any(c in s for c in ' ="') else s
+        if not self.dictionary:
+            return ""
+        return "<dict " + " ".join(f"{q(w)}={q(r)}" for w, r in self.dictionary.items()) + ">"
 
     def to_config_tag(self) -> str:
         """<config ...> タグの文字列にする (API キーと URL は保存しない)。"""

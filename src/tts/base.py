@@ -34,6 +34,10 @@ class TTSEngine(ABC):
     ノートの解析 → 文ごとの合成 → 結合・タイミング計算の流れは pipeline.synthesize_notes にある。
     """
 
+    def cache_id(self) -> str:
+        """キャッシュのキーに入れる、エンジン (サーバ) を区別する文字列。"""
+        return f"{type(self).__name__} {getattr(self, 'base_url', '')}"
+
     @abstractmethod
     def synthesize_sentences(
         self, sentences: list[Sentence], params: list[VoiceParams],

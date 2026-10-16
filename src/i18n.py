@@ -199,6 +199,7 @@ STRINGS: dict[str, tuple[str, str]] = {
                            "The speaker of role \"{role}\" has no style \"{style}\" (the role's style is used)"),
     "lint_style_ignored": ("OpenAI互換のエンジンでは <style> は無視されます",
                            "<style> is ignored with OpenAI-compatible engines"),
+    "log_cache_used": ("    (前回の合成結果を使用)", "    (using the previous result)"),
     "log_lint_header": ("\nノートの確認:", "\nNote check:"),
     "log_lint_issue": ("  スライド {slide} (行 {line}): {message}", "  Slide {slide} (line {line}): {message}"),
     "log_config_invalid": ("<config> の {key}={value} は値の形式が違うため無視しました。\n",

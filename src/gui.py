@@ -23,6 +23,7 @@ import pipeline
 from pptx_reader import read_slides
 from settings import DEFAULT_URLS, ENGINES, Settings
 from tts.openai_compat import KOKORO_LANG_CODES, group_voices, voice_short_name
+from cache import SynthCache
 from version import __version__
 import i18n
 from i18n import t
@@ -1529,7 +1530,7 @@ class App(_AppBase):
         if pipeline.generate(
             settings, input_path, output_path,
             selected_slides=self._selected_slides,
-            engine=engine, cast=cast,
+            engine=engine, cast=cast, cache=SynthCache(),
             on_progress=lambda v: self.after(0, self.progress.set, v),
             should_cancel=self._cancel_event.is_set,
         ):

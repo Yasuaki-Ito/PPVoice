@@ -7,6 +7,7 @@ import os
 from dataclasses import dataclass, field
 from typing import Callable
 
+from cache import SynthCache
 from i18n import t
 from lint import Issue, lint_notes
 from notes import _BRACE_PATTERN, _NEXT_TAG, _READING_PATTERN, Sentence, parse_notes
@@ -251,7 +252,7 @@ def voice_params(sentences: list[Sentence], cast: Cast) -> list[VoiceParams]:
 def synthesize_notes(
     engine: TTSEngine, text: str, cast: Cast, pause_sec: float = 0.5,
     split_sentence_ends: bool = False, on_chunk=None, turn_pause: float | None = None,
-    dictionary: dict[str, str] | None = None,
+    dictionary: dict[str, str] | None = None, cache: SynthCache | None = None, on_cache_hit=None,
 ) -> tuple[bytes, list[Timing], list[tuple[int, float]]]:
     """ノートのテキストから WAV を作り、各文のタイミングと <next> の位置も返す。
 
@@ -261,6 +262,7 @@ def synthesize_notes(
         on_chunk: コールバック on_chunk(文の番号, 文の数, 字幕テキスト)
         turn_pause: 役が替わる区切りの無音 (None なら pause_sec)
         dictionary: 読みの辞書 (<dict>)
+        cache: 合成結果のキャッシュ (None なら使わない)。当たったら on_cache_hit() を呼ぶ
 
     Returns:
         (WAVバイナリ, [Timing, ...], [(sentence_index, char_ratio), ...])
@@ -274,6 +276,15 @@ def synthesize_notes(
 
     params = voice_params(sentences, cast)
     roles = [cast.role(s.speaker) for s in sentences]
+
+    if cache is not None:
+        key = cache.key(engine.cache_id(), text, split_sentence_ends, pause_sec, turn_pause, dictionary or {},
+                        [vars(p) for p in params], [r.name for r in roles])
+        hit = cache.get(key)
+        if hit is not None:
+            if on_cache_hit:
+                on_cache_hit()
+            return hit
 
     # pauses の None (<wait> の指定がない区切り) は、役が替わるなら turn_pause、それ以外は pause_sec
     def gap(i: int, g: float | None) -> float:
@@ -293,6 +304,8 @@ def synthesize_notes(
                                leading_pause=parsed.leading_pause)
     for timing, role in zip(timings, roles):
         timing.speaker = role.name
+    if cache is not None:
+        cache.put(key, wav, timings, parsed.next_positions)
     return wav, timings, parsed.next_positions
 
 
@@ -316,6 +329,7 @@ def generate(
     cast: Cast | None = None,
     on_progress: Callable[[float], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
+    cache: SynthCache | None = None,
 ) -> GenerateResult | None:
     """PPTX を読み込み、ノートを合成して音声付き PPTX を書き出す。
 
@@ -325,6 +339,7 @@ def generate(
         cast: 役の声 (None なら settings の話者を解決する)
         on_progress: 進捗 (0〜1) を受け取るコールバック
         should_cancel: True を返すと中断する (Cancelled を送出)
+        cache: 合成結果のキャッシュ (None なら使わない)
 
     Returns:
         書き出した結果 (ノートのあるスライドがなければ None)
@@ -393,7 +408,8 @@ def generate(
             wav, timings, next_pos = synthesize_notes(engine, info.notes_text, cast, settings.pause,
                                                       settings.split_sentences, on_chunk=on_chunk,
                                                       turn_pause=settings.turn_pause,
-                                                      dictionary=settings.dictionary)
+                                                      dictionary=settings.dictionary, cache=cache,
+                                                      on_cache_hit=lambda: print(t("log_cache_used")))
             slide_timings[info.index] = timings
             if next_pos:
                 slide_next_positions[info.index] = next_pos

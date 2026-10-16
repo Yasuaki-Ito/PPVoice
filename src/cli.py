@@ -23,6 +23,7 @@ import requests  # noqa: E402
 
 import i18n  # noqa: E402
 import pipeline  # noqa: E402
+from cache import SynthCache  # noqa: E402
 from lint import lint_notes  # noqa: E402
 from notes import parse_notes  # noqa: E402
 from pptx_reader import read_slides  # noqa: E402
@@ -125,7 +126,7 @@ def cmd_generate(args) -> dict:
         with contextlib.redirect_stdout(sys.stderr):
             cast = pipeline.create_cast(settings)
             result = pipeline.generate(settings, args.input, output, selected_slides=parse_slides(args.slides),
-                                       engine=engine, cast=cast)
+                                       engine=engine, cast=cast, cache=None if args.no_cache else SynthCache())
     except requests.RequestException as e:
         raise server_error(settings, e)
     except ValueError as e:
@@ -283,6 +284,8 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("-o", "--output", help="output PPTX (default: <input>_speech.pptx)")
     g.add_argument("--slides", help="slides to generate, e.g. 1-3,5")
     g.add_argument("--force", action="store_true", help="overwrite the output if it exists")
+    g.add_argument("--no-cache", action="store_true",
+                   help="synthesize all slides again without using the previous results")
 
     c = sub.add_parser("check", help="parse the notes without synthesizing")
     common(c)

@@ -113,6 +113,9 @@ class OpenAICompatEngine(TTSEngine):
     def _headers(self) -> dict:
         return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
 
+    def cache_id(self) -> str:
+        return f"openai {self.base_url} {self.model}"
+
     def _speech(self, s: Sentence, p: VoiceParams) -> bytes:
         """1文を合成して WAV を返す (声は p.voice = 声の ID)。"""
         body = {

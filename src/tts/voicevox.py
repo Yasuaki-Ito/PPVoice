@@ -194,6 +194,17 @@ class VoicevoxEngine(TTSEngine):
                 wavs[i] = wav
         return wavs
 
+    def cache_id(self) -> str:
+        """URL とエンジンのバージョン (バージョンが変わると声が変わることがあるため)。"""
+        if not hasattr(self, "_version"):
+            try:
+                resp = requests.get(f"{self.base_url}/version", timeout=5)
+                resp.raise_for_status()
+                self._version = resp.text.strip()
+            except requests.RequestException:
+                self._version = ""
+        return f"voicevox {self.base_url} {self._version}"
+
     def engine_name(self) -> str | None:
         """エンジンの名前 (/engine_manifest の name。例: "VOICEVOX Engine")。取得できなければ None。"""
         try:

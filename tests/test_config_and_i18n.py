@@ -1,7 +1,6 @@
-"""<config> タグの解析・句読点の表示名・多言語化の文言のテスト
+"""句読点の表示名・多言語化の文言のテスト
 
-<config> の解析は今は gui.App にある (フェーズ0b で settings.py に移す予定)。
-移したときにこのテストの入出力の例をそのまま使えるようにしておく。
+<config> の解析のテストは test_settings.py にある。
 """
 
 import re
@@ -10,27 +9,6 @@ import pytest
 
 gui = pytest.importorskip("gui")
 import i18n  # noqa: E402
-
-CONFIG_EXAMPLES = [
-    # (ノートのリスト, 解析結果)
-    (["<config speaker=四国めたん style=ノーマル pause=0.5>"],
-     {"speaker": "四国めたん", "style": "ノーマル", "pause": "0.5"}),
-    (['<config font="Arial Rounded MT Bold" fontsize=26>'],
-     {"font": "Arial Rounded MT Bold", "fontsize": "26"}),
-    (['<config font="">'], {"font": ""}),
-    (["本文\n<config engine=openai model=kokoro speaker=af_heart split_sentences=on>\n続き"],
-     {"engine": "openai", "model": "kokoro", "speaker": "af_heart", "split_sentences": "on"}),
-    # 複数のスライドにある場合は後のタグが優先
-    (["<config speed=1.0 pitch=0.00>", "<config speed=1.2>"], {"speed": "1.2", "pitch": "0.00"}),
-    (["<CONFIG kuten=そのまま touten=、>"], {"kuten": "そのまま", "touten": "、"}),
-    (["タグなし"], {}),
-]
-
-
-@pytest.mark.parametrize("notes,expected", CONFIG_EXAMPLES)
-def test_parse_config_tags(notes, expected):
-    assert gui.App._parse_config_tags(gui.App, notes) == expected
-
 
 # ---------------------------------------------------------------------------
 # 句読点の置換先: 内部の値 (<config> に保存する値) は日本語のまま、表示だけ翻訳する

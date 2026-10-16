@@ -171,6 +171,12 @@ STRINGS: dict[str, tuple[str, str]] = {
     "log_no_voices": ("声が見つかりませんでした。\n", "No voices were found.\n"),
     "log_speakers_fetched": ("{n} 話者 ({styles} スタイル) を取得しました。\n",
                              "Speakers found: {n} ({styles} styles)\n"),
+    "log_speaker_not_found": ("話者「{name}」が見つからないため、「{used}」で読み上げます。\n",
+                              "Speaker \"{name}\" was not found. Using \"{used}\".\n"),
+    "log_style_not_found": ("スタイル「{name}」が見つからないため、「{used}」で読み上げます。\n",
+                            "Style \"{name}\" was not found. Using \"{used}\".\n"),
+    "log_config_invalid": ("<config> の {key}={value} は値の形式が違うため無視しました。\n",
+                           "Ignored {key}={value} in <config> because the value is invalid.\n"),
     "log_no_speakers": ("話者が見つかりませんでした。\n", "No speakers were found.\n"),
     "log_fetch_first": ("先に話者を取得してください。\n", "Get the speakers first.\n"),
 

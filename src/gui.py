@@ -19,11 +19,10 @@ try:
 except ImportError:
     _HAS_DND = False
 
+import pipeline
 from pptx_reader import read_slides
-from pptx_writer import embed_audio, _extract_click_groups
-from notes import _BRACE_PATTERN, _NEXT_TAG, _READING_PATTERN
-from tts.openai_compat import KOKORO_LANG_CODES, OpenAICompatEngine, group_voices, voice_short_name
-from tts.voicevox import VoicevoxEngine
+from settings import DEFAULT_URLS, ENGINES, Settings
+from tts.openai_compat import KOKORO_LANG_CODES, group_voices, voice_short_name
 from version import __version__
 import i18n
 from i18n import t
@@ -56,9 +55,8 @@ ctk.set_default_color_theme(
 )
 
 
-class _CancelledError(Exception):
-    """生成処理の中断を伝える例外"""
-    pass
+# 生成処理の中断を伝える例外
+_CancelledError = pipeline.Cancelled
 
 
 class LogRedirector:
@@ -94,8 +92,8 @@ else:
 
 class App(_AppBase):
     # TTS エンジンの内部キー
-    _ENGINES = ("voicevox", "openai")
-    _DEFAULT_URLS = {"voicevox": "http://localhost:50021", "openai": "http://localhost:8880/v1"}
+    _ENGINES = ENGINES
+    _DEFAULT_URLS = DEFAULT_URLS
 
     def __init__(self):
         super().__init__()
@@ -124,8 +122,9 @@ class App(_AppBase):
         self._voices_grouped = False
         self._running = False
         self._cancel_event = threading.Event()
-        self._pending_speaker: str | None = None
-        self._pending_style: str | None = None
+        # 選びたい話者 (話者名, スタイル名)。OpenAI互換は (声の ID, "")。
+        # 話者一覧を取得したときに、この名前の話者を選ぶ
+        self._wanted_voice: tuple[str, str] = ("", "")
         self._test_stop = False
 
         self._build_ui()
@@ -202,11 +201,10 @@ class App(_AppBase):
 
     def _rebuild_ui(self):
         """画面を現在の言語で作り直す。入力中の設定・取得済みの話者一覧・ログは引き継ぐ。"""
-        config = self._parse_config_tags([self._generate_config_tag()])
+        settings = self._settings_from_ui()
         state = {
             "input": self.input_var.get(), "output": self.output_var.get(),
             "slide_range": self.slide_range_var.get(), "selected": self._selected_slides,
-            "url": self.url_var.get(), "api_key": self.api_key_var.get(),
             "test_text": self.test_textbox.get("1.0", "end-1c"),
             "log": self.log_box.get("1.0", "end-1c"),
         }
@@ -221,14 +219,12 @@ class App(_AppBase):
         self._selected_slides = state["selected"]
         # エンジンと取得済みの話者一覧
         self._apply_engine_ui()
-        self.url_var.set(state["url"])
-        self.api_key_var.set(state["api_key"])
         if self._engine == "voicevox" and self._speakers_cache:
             self._on_speakers_fetched(self._speakers_cache, quiet=True)
         elif self._engine == "openai" and self._openai_voices:
             self._on_voices_fetched(self._engine, self._openai_voices, quiet=True)
         # 話者の選択・音声・字幕などの設定
-        self._apply_config(config)
+        self._load_settings_to_ui(settings)
         # テスト欄が初期値のままなら、新しい言語の初期値にする
         if state["test_text"] not in i18n.STRINGS["test_text"]:
             self.test_textbox.delete("1.0", "end")
@@ -689,9 +685,7 @@ class App(_AppBase):
         self.output_var.set(base + "_speech.pptx")
         # <config> タグの自動読み込み
         try:
-            slides = read_slides(path)
-            notes = [s.notes_text for s in slides if s.notes_text]
-            config = self._parse_config_tags(notes)
+            config = pipeline.read_config(path)
             if config:
                 self._apply_config(config)
                 details = "\n".join(f"  {k}={v}" for k, v in config.items())
@@ -832,6 +826,7 @@ class App(_AppBase):
         self._engine_urls[self._engine] = self.url_var.get().strip()
         self._engine = engine
         self.url_var.set(self._engine_urls[engine])
+        self._wanted_voice = ("", "")
         self._openai_voices = []
         self._voices_grouped = False
         self._apply_engine_ui()
@@ -876,24 +871,11 @@ class App(_AppBase):
             self.pitch_row.pack_forget()
             self.intonation_row.pack_forget()
 
-    def _create_engine(self, pause_sec: float = 0.5):
-        """現在の GUI 設定から TTS エンジンを作成する。"""
-        url = self.url_var.get().strip()
-        speed = self.speed_var.get()
-        volume = self.volume_var.get()
-        split = self.split_sentence_var.get()
-        if self._engine == "openai":
-            return OpenAICompatEngine(
-                voice=self._current_voice_id(), base_url=url,
-                model=self.model_var.get().strip() or "kokoro", api_key=self.api_key_var.get().strip(),
-                pause_sec=pause_sec, speed_scale=speed, volume_scale=volume, split_sentence_ends=split,
-            )
-        speaker_id = self._speaker_map.get(self.style_speaker_menu.get(), 1)
-        return VoicevoxEngine(
-            speaker_id=speaker_id, base_url=url, pause_sec=pause_sec,
-            speed_scale=speed, pitch_scale=self.pitch_var.get(),
-            intonation_scale=self.intonation_var.get(), volume_scale=volume, split_sentence_ends=split,
-        )
+    def _create_engine(self):
+        """現在の GUI 設定から TTS エンジンを作成する (取得済みの話者一覧を使う)。"""
+        settings = self._settings_from_ui()
+        speakers = self._speakers_cache if settings.engine == "voicevox" else self._openai_voices
+        return pipeline.create_engine(settings, speakers=speakers)
 
     def _current_voice_id(self) -> str:
         """OpenAI互換で選択中の声の ID。"""
@@ -910,18 +892,26 @@ class App(_AppBase):
         lang_name = t(f"kokoro_lang_{lang}") if lang in KOKORO_LANG_CODES else t("lang_unknown", code=lang)
         return t("voice_group_label", lang=lang_name, gender=t(f"gender_{gender}"))
 
-    def _speaker_description(self) -> str:
-        """ログ表示用の話者の説明。"""
+    def _current_voice_names(self) -> tuple[str, str]:
+        """選択中の話者の (話者名, スタイル名)。OpenAI互換は (声の ID, "")。一覧の取得前は選びたい話者。"""
+        if not self._speaker_map:
+            return self._wanted_voice
         if self._engine == "openai":
-            return f"voice={self._current_voice_id()}, model={self.model_var.get().strip()}"
-        return f"speaker={self._speaker_map.get(self.style_speaker_menu.get(), 1)}"
+            return self._current_voice_id(), ""
+        speaker = self.speaker_menu.get()
+        style = self.style_speaker_menu.get()
+        return (speaker.rsplit(" (", 1)[0] if " (" in speaker else "",
+                style.rsplit(" (ID=", 1)[0] if " (ID=" in style else "")
 
     # 話者取得のタイムアウト (接続, 読み込み) 秒
-    _FETCH_TIMEOUT = (5, 30)
+    _FETCH_TIMEOUT = pipeline.FETCH_TIMEOUT
 
     def _fetch_speakers(self):
         """話者一覧を別スレッドで取得する (取得中も GUI が固まらないように)。"""
         self._log_clear()
+        # 取得し直しても、今選んでいる話者を選び直す
+        if self._speaker_map:
+            self._wanted_voice = self._current_voice_names()
         url = self.url_var.get().strip().rstrip("/")
         name = t("engine_name_voicevox") if self._engine == "voicevox" else t("engine_name_server")
         self._log(t("log_connecting", name=name, url=url))
@@ -931,13 +921,15 @@ class App(_AppBase):
         threading.Thread(target=self._fetch_speakers_worker, args=(url, engine, api_key), daemon=True).start()
 
     def _fetch_speakers_worker(self, url: str, engine: str = "voicevox", api_key: str = ""):
+        settings = Settings()
+        settings.set_engine(engine)
+        settings.url = url
+        settings.api_key = api_key
         try:
+            speakers = pipeline.fetch_speakers(settings)
             if engine == "openai":
-                voices = OpenAICompatEngine(voice="", base_url=url, api_key=api_key).list_voices(
-                    timeout=self._FETCH_TIMEOUT)
-                self.after(0, self._on_voices_fetched, engine, voices)
+                self.after(0, self._on_voices_fetched, engine, speakers)
                 return
-            speakers = VoicevoxEngine(base_url=url).list_speakers(timeout=self._FETCH_TIMEOUT)
         except requests.exceptions.ConnectTimeout:
             msg = t("log_connect_timeout", url=url, sec=self._FETCH_TIMEOUT[0])
         except requests.exceptions.ConnectionError:
@@ -989,7 +981,7 @@ class App(_AppBase):
         if voices:
             if not quiet:
                 self._log(t("log_voices_fetched", n=len(voices)))
-            self._apply_pending_speaker()
+            self._select_voice(*self._wanted_voice)
         else:
             self._log(t("log_no_voices"))
         self._update_run_btn()
@@ -1022,8 +1014,7 @@ class App(_AppBase):
             self._on_speaker_changed(speaker_names[0])
             if not quiet:
                 self._log(t("log_speakers_fetched", n=len(speakers), styles=total_styles))
-            # pending speaker の適用
-            self._apply_pending_speaker()
+            self._select_voice(*self._wanted_voice)
         else:
             self._log(t("log_no_speakers"))
         self._update_run_btn()
@@ -1057,33 +1048,14 @@ class App(_AppBase):
             self._log(t("log_no_input"))
             return
         try:
-            slides = read_slides(path)
+            rows = pipeline.check_next_tags(path)
         except Exception as e:
             self._log(t("log_pptx_read_failed", e=e))
             return
 
         self._log(t("log_next_check_header"))
-        for si in slides:
-            sld = si.slide._element
-            click_groups, _ = _extract_click_groups(sld)
-            n_clicks = len(click_groups)
-            if si.notes_text:
-                # {…} 内の <next> はエスケープ済みなので除外してカウント
-                _stripped = _READING_PATTERN.sub("", si.notes_text)
-                _stripped = _BRACE_PATTERN.sub("", _stripped)
-                n_next = len(_NEXT_TAG.findall(_stripped))
-            else:
-                n_next = 0
-            status = ""
-            if n_next > n_clicks and n_clicks > 0:
-                status = t("next_too_many")
-            elif n_next > 0 and n_clicks == 0:
-                status = t("next_no_anim")
-            elif n_clicks > n_next and n_next > 0:
-                status = t("next_surplus", n=n_clicks - n_next)
-            elif n_clicks > 0 and n_next == 0:
-                status = t("next_none")
-            self._log(t("log_next_check_row", num=si.index + 1, anims=n_clicks, nexts=n_next, status=status))
+        for r in rows:
+            self._log(t("log_next_check_row", num=r.slide, anims=r.animations, nexts=r.nexts, status=r.status))
         self._log("---\n")
 
     # ------------------------------------------------------------------
@@ -1167,98 +1139,95 @@ class App(_AppBase):
     # <config> タグ
     # ------------------------------------------------------------------
 
-    _CONFIG_RE = re.compile(r"<config\s([^>]*)>", re.IGNORECASE)
-    _KV_RE = re.compile(r'([\w]+)=(?:"([^"]*)"|(\S+))')
+    def _settings_from_ui(self) -> Settings:
+        """画面の値から Settings を作る。"""
+        s = Settings()
+        s.engine = self._engine
+        s.urls = dict(self._engine_urls)
+        s.urls[self._engine] = self.url_var.get().strip()
+        s.model = self.model_var.get().strip()
+        s.api_key = self.api_key_var.get().strip()
+        s.speaker, s.style = self._current_voice_names()
+        s.speed = self.speed_var.get()
+        s.pitch = self.pitch_var.get()
+        s.intonation = self.intonation_var.get()
+        s.volume = self.volume_var.get()
+        s.pause = self.pause_var.get()
+        s.end_pause = self.end_pause_var.get()
+        s.split_sentences = self.split_sentence_var.get()
+        s.auto_next = self.auto_next_var.get()
+        s.auto_next_enabled = self.auto_next_enabled_var.get()
+        s.subtitle = self.subtitle_var.get()
+        s.subtitle_style = self.style_var.get()
+        s.fontsize = self.fontsize_var.get()
+        font = self.subtitle_font_var.get().strip()
+        s.font = "" if font == self._font_default_label else font
+        s.bottom = self.bottom_var.get()
+        s.font_color = self.font_color_var.get()
+        s.outline = self.use_outline_var.get()
+        s.outline_color = self.outline_color_var.get()
+        s.outline_width = self.outline_width_var.get()
+        s.glow = self.use_glow_var.get()
+        s.glow_color = self.glow_color_var.get()
+        s.glow_size = self.glow_size_var.get()
+        s.bg_color = self.bg_color_var.get()
+        s.bg_alpha = self.bg_alpha_var.get()
+        s.kuten = self._punct_value(_KUTEN_CHOICES, self.kuten_mode_var.get())
+        s.touten = self._punct_value(_TOUTEN_CHOICES, self.touten_mode_var.get())
+        s.bold = self.default_bold_var.get()
+        s.italic = self.default_italic_var.get()
+        s.underline = self.default_underline_var.get()
+        s.math_bold = self.math_bold_var.get()
+        return s
 
-    def _parse_config_tags(self, notes_list: list[str]) -> dict:
-        """複数のノートテキストから <config ...> タグを解析し設定 dict を返す。"""
-        config: dict[str, str] = {}
-        for notes in notes_list:
-            for m in self._CONFIG_RE.finditer(notes):
-                for kv in self._KV_RE.finditer(m.group(1)):
-                    key = kv.group(1)
-                    val = kv.group(2) if kv.group(2) is not None else kv.group(3)
-                    config[key] = val
-        return config
+    def _load_settings_to_ui(self, s: Settings):
+        """Settings の値を画面に反映する。"""
+        # エンジンは先に切り替える (切り替えると話者一覧がリセットされるため)
+        self._set_engine(s.engine)
+        self._engine_urls = dict(s.urls)
+        self.url_var.set(s.url)
+        self.model_var.set(s.model)
+        self.api_key_var.set(s.api_key)
+        self.speed_var.set(s.speed)
+        self.pitch_var.set(s.pitch)
+        self.intonation_var.set(s.intonation)
+        self.volume_var.set(s.volume)
+        self.pause_var.set(s.pause)
+        self.end_pause_var.set(s.end_pause)
+        self.split_sentence_var.set(s.split_sentences)
+        self.auto_next_var.set(s.auto_next)
+        self.auto_next_enabled_var.set(s.auto_next_enabled)
+        self.subtitle_var.set(s.subtitle)
+        self.style_var.set(s.subtitle_style)
+        self._on_style_changed()
+        self.fontsize_var.set(s.fontsize)
+        self.subtitle_font_var.set(s.font if s.font else self._font_default_label)
+        self.bottom_var.set(s.bottom)
+        self._set_color(s.font_color, self.font_color_var, self.font_color_btn)
+        self.use_outline_var.set(s.outline)
+        self._set_color(s.outline_color, self.outline_color_var, self.outline_color_btn)
+        self.outline_width_var.set(s.outline_width)
+        self.use_glow_var.set(s.glow)
+        self._set_color(s.glow_color, self.glow_color_var, self.glow_color_btn)
+        self.glow_size_var.set(s.glow_size)
+        self._set_color(s.bg_color, self.bg_color_var, self.bg_color_btn)
+        self.bg_alpha_var.set(s.bg_alpha)
+        self.kuten_mode_var.set(self._punct_label(_KUTEN_CHOICES, s.kuten))
+        self.touten_mode_var.set(self._punct_label(_TOUTEN_CHOICES, s.touten))
+        self.default_bold_var.set(s.bold)
+        self.default_italic_var.set(s.italic)
+        self.default_underline_var.set(s.underline)
+        self.math_bold_var.set(s.math_bold)
+        # 話者は名前で選ぶ (一覧を取得していなければ、取得したときに選ぶ)
+        self._wanted_voice = (s.speaker, s.style)
+        if self._speaker_map:
+            self._select_voice(s.speaker, s.style)
 
     def _apply_config(self, config: dict):
-        """解析済み config dict を GUI ウィジェットに適用する。"""
-        # エンジンは話者より先に切り替える (切り替えると話者一覧がリセットされるため)
-        if "engine" in config:
-            self._set_engine(config["engine"].lower())
-        if "model" in config:
-            self.model_var.set(config["model"])
-        # 話者は pending に保存 (一覧取得後に適用)
-        if "speaker" in config:
-            self._pending_speaker = config["speaker"]
-        if "style" in config:
-            self._pending_style = config["style"]
-        # すでに話者一覧がある場合は即適用
-        if self._speaker_map:
-            self._apply_pending_speaker()
-
-        # --- 音声設定 ---
-        if "pause" in config:
-            self.pause_var.set(float(config["pause"]))
-        if "speed" in config:
-            self.speed_var.set(float(config["speed"]))
-        if "pitch" in config:
-            self.pitch_var.set(float(config["pitch"]))
-        if "intonation" in config:
-            self.intonation_var.set(float(config["intonation"]))
-        if "volume" in config:
-            self.volume_var.set(float(config["volume"]))
-        if "end_pause" in config:
-            self.end_pause_var.set(float(config["end_pause"]))
-        if "split_sentences" in config:
-            self.split_sentence_var.set(config["split_sentences"].lower() in ("on", "true", "1"))
-        if "auto_next" in config:
-            self.auto_next_var.set(float(config["auto_next"]))
-        if "auto_next_enabled" in config:
-            self.auto_next_enabled_var.set(config["auto_next_enabled"].lower() in ("on", "true", "1"))
-        # --- 字幕設定 ---
-        if "subtitle" in config:
-            self.subtitle_var.set(config["subtitle"].lower() in ("on", "true", "1"))
-        if "subtitle_style" in config:
-            self.style_var.set(config["subtitle_style"])
-            self._on_style_changed()
-        if "fontsize" in config:
-            self.fontsize_var.set(int(config["fontsize"]))
-        if "font" in config:
-            val = config["font"]
-            self.subtitle_font_var.set(val if val else self._font_default_label)
-        if "bottom" in config:
-            self.bottom_var.set(float(config["bottom"]))
-        if "font_color" in config:
-            self._set_color(config["font_color"], self.font_color_var, self.font_color_btn)
-        if "outline" in config:
-            self.use_outline_var.set(config["outline"].lower() in ("on", "true", "1"))
-        if "outline_color" in config:
-            self._set_color(config["outline_color"], self.outline_color_var, self.outline_color_btn)
-        if "outline_width" in config:
-            self.outline_width_var.set(float(config["outline_width"]))
-        if "glow" in config:
-            self.use_glow_var.set(config["glow"].lower() in ("on", "true", "1"))
-        if "glow_color" in config:
-            self._set_color(config["glow_color"], self.glow_color_var, self.glow_color_btn)
-        if "glow_size" in config:
-            self.glow_size_var.set(float(config["glow_size"]))
-        if "bg_color" in config:
-            self._set_color(config["bg_color"], self.bg_color_var, self.bg_color_btn)
-        if "bg_alpha" in config:
-            self.bg_alpha_var.set(int(config["bg_alpha"]))
-        if "kuten" in config:
-            self.kuten_mode_var.set(self._punct_label(_KUTEN_CHOICES, config["kuten"]))
-        if "touten" in config:
-            self.touten_mode_var.set(self._punct_label(_TOUTEN_CHOICES, config["touten"]))
-        if "bold" in config:
-            self.default_bold_var.set(config["bold"].lower() in ("on", "true", "1"))
-        if "italic" in config:
-            self.default_italic_var.set(config["italic"].lower() in ("on", "true", "1"))
-        if "underline" in config:
-            self.default_underline_var.set(config["underline"].lower() in ("on", "true", "1"))
-        if "math_bold" in config:
-            self.math_bold_var.set(config["math_bold"].lower() in ("on", "true", "1"))
+        """解析済みの <config> を画面に反映する。"""
+        s = self._settings_from_ui()
+        s.apply_config(config, warn=lambda k, v: self._log(t("log_config_invalid", key=k, value=v)))
+        self._load_settings_to_ui(s)
 
     def _set_color(self, hex_val: str, var: ctk.StringVar, btn: ctk.CTkButton):
         """色の変数とボタン表示を更新する。"""
@@ -1274,11 +1243,11 @@ class App(_AppBase):
         except ValueError:
             pass
 
-    def _apply_pending_speaker(self):
-        """pending の話者・スタイル名を一覧から探して選択する。"""
+    def _select_voice(self, speaker: str, style: str):
+        """話者一覧から、名前で話者 (とスタイル) を選ぶ。見つからなければ今の選択のまま。"""
         if self._engine == "openai":
             # OpenAI互換: speaker は声の ID (2段階の場合は、その声を含むグループを選ぶ)
-            voice_id, self._pending_speaker, self._pending_style = self._pending_speaker, None, None
+            voice_id = speaker
             if not voice_id:
                 return
             if not self._voices_grouped:
@@ -1294,84 +1263,23 @@ class App(_AppBase):
                     self.style_speaker_menu.set(label)
                     break
             return
-        if self._pending_speaker:
+
+        if speaker:
             for display_name in (self.speaker_menu.cget("values") or []):
-                name = display_name.rsplit(" (", 1)[0]
-                if name == self._pending_speaker:
+                if display_name.rsplit(" (", 1)[0] == speaker:
                     self.speaker_menu.set(display_name)
                     self._on_speaker_changed(display_name)
                     break
-            self._pending_speaker = None
-
-        if self._pending_style:
+        if style:
             for label in (self.style_speaker_menu.cget("values") or []):
                 # "スタイル名 (ID=X)" から先頭のスタイル名を取得
-                style_name = label.rsplit(" (ID=", 1)[0]
-                if style_name == self._pending_style:
+                if label.rsplit(" (ID=", 1)[0] == style:
                     self.style_speaker_menu.set(label)
                     break
-            self._pending_style = None
 
     def _generate_config_tag(self) -> str:
         """現在の GUI 設定を <config ...> タグ文字列として生成する。"""
-        parts: list[str] = []
-
-        def _add(key, val):
-            s = str(val)
-            if " " in s or not s:
-                parts.append(f'{key}="{s}"')
-            else:
-                parts.append(f"{key}={s}")
-
-        # エンジン・話者 (APIキーは PPTX に残るため保存しない)
-        _add("engine", self._engine)
-        speaker_display = self.speaker_menu.get()
-        if self._engine == "openai":
-            _add("model", self.model_var.get().strip())
-            voice_id = self._current_voice_id()
-            if voice_id in self._openai_voices:
-                _add("speaker", voice_id)
-        elif speaker_display and " (" in speaker_display:
-            _add("speaker", speaker_display.rsplit(" (", 1)[0])
-        style_display = self.style_speaker_menu.get()
-        if self._engine == "voicevox" and style_display and " (ID=" in style_display:
-            _add("style", style_display.rsplit(" (ID=", 1)[0])
-
-        # 音声
-        _add("pause", f"{self.pause_var.get():.1f}")
-        _add("speed", f"{self.speed_var.get():.1f}")
-        _add("pitch", f"{self.pitch_var.get():.2f}")
-        _add("intonation", f"{self.intonation_var.get():.1f}")
-        _add("volume", f"{self.volume_var.get():.1f}")
-        _add("end_pause", f"{self.end_pause_var.get():.1f}")
-        _add("split_sentences", "on" if self.split_sentence_var.get() else "off")
-        _add("auto_next", f"{self.auto_next_var.get():.1f}")
-        _add("auto_next_enabled", "on" if self.auto_next_enabled_var.get() else "off")
-
-        # 字幕
-        _add("subtitle", "on" if self.subtitle_var.get() else "off")
-        _add("subtitle_style", self.style_var.get())
-        _add("fontsize", self.fontsize_var.get())
-        font_val = self.subtitle_font_var.get()
-        _add("font", "" if font_val == self._font_default_label else font_val)
-        _add("bottom", f"{self.bottom_var.get():.2f}")
-        _add("font_color", self.font_color_var.get())
-        _add("outline", "on" if self.use_outline_var.get() else "off")
-        _add("outline_color", self.outline_color_var.get())
-        _add("outline_width", f"{self.outline_width_var.get():.2f}")
-        _add("glow", "on" if self.use_glow_var.get() else "off")
-        _add("glow_color", self.glow_color_var.get())
-        _add("glow_size", f"{self.glow_size_var.get():.1f}")
-        _add("bg_color", self.bg_color_var.get())
-        _add("bg_alpha", self.bg_alpha_var.get())
-        _add("kuten", self._punct_value(_KUTEN_CHOICES, self.kuten_mode_var.get()))
-        _add("touten", self._punct_value(_TOUTEN_CHOICES, self.touten_mode_var.get()))
-        _add("bold", "on" if self.default_bold_var.get() else "off")
-        _add("italic", "on" if self.default_italic_var.get() else "off")
-        _add("underline", "on" if self.default_underline_var.get() else "off")
-        _add("math_bold", "on" if self.math_bold_var.get() else "off")
-
-        return "<config " + " ".join(parts) + ">"
+        return self._settings_from_ui().to_config_tag()
 
     def _on_save_config(self):
         """設定保存ポップアップを表示する。"""
@@ -1591,130 +1499,18 @@ class App(_AppBase):
 
     def _do_generate(self):
         input_path = self.input_var.get().strip()
-        base_name = os.path.splitext(input_path)[0]
-
         output_path = self.output_var.get().strip()
         if not output_path:
-            output_path = base_name + "_speech.pptx"
+            output_path = os.path.splitext(input_path)[0] + "_speech.pptx"
 
-        pause_sec = self.pause_var.get()
-        engine = self._create_engine(pause_sec=pause_sec)
-        speaker_desc = self._speaker_description()
-        end_pause_sec = self.end_pause_var.get()
-        use_subtitle = self.subtitle_var.get()
-        sub_style = self.style_var.get()
-        sub_size = self.fontsize_var.get()
-        sub_bottom = self.bottom_var.get()
-        _font_sel = self.subtitle_font_var.get().strip()
-        sub_font_name = "" if _font_sel == self._font_default_label else _font_sel
-        sub_font_color = self.font_color_var.get().lstrip("#")
-        sub_use_outline = self.use_outline_var.get()
-        sub_outline_color = self.outline_color_var.get().lstrip("#")
-        sub_outline_width = self.outline_width_var.get()
-        sub_use_glow = self.use_glow_var.get()
-        sub_glow_color = self.glow_color_var.get().lstrip("#")
-        sub_glow_size = self.glow_size_var.get()
-        sub_bg_color = self.bg_color_var.get().lstrip("#")
-        sub_bg_alpha = self.bg_alpha_var.get()
-        sub_kuten_mode = self._punct_value(_KUTEN_CHOICES, self.kuten_mode_var.get())
-        sub_touten_mode = self._punct_value(_TOUTEN_CHOICES, self.touten_mode_var.get())
-        sub_default_bold = self.default_bold_var.get()
-        sub_default_italic = self.default_italic_var.get()
-        sub_default_underline = self.default_underline_var.get()
-        sub_math_bold = self.math_bold_var.get()
-
-        # スライド読み込み
-        print(t("log_reading_pptx", path=input_path))
-        slides = read_slides(input_path)
-        total_slides = len(slides)
-        print(t("log_slides_found", n=total_slides))
-
-        # スライドフィルタ
-        selected = self._selected_slides
-        if selected is not None:
-            slides = [s for s in slides if (s.index + 1) in selected]
-            print(t("log_slides_selected", n=len(slides)))
-
-        notes_count = sum(1 for s in slides if s.notes_text)
-        if notes_count == 0:
-            print(t("log_no_notes"))
-            return
-        print(t("log_notes_count", n=notes_count))
-
-        # 音声合成
-        auto_next_sec = self.auto_next_var.get()
-        print(t("log_synthesizing", desc=speaker_desc, pause=pause_sec))
-
-        slide_audio = []
-        slide_timings = {}
-        slide_next_positions = {}
-        processed = 0
-
-        for info in slides:
-            if self._cancel_event.is_set():
-                raise _CancelledError()
-
-            slide_num = info.index + 1
-            # 進捗は処理するスライド (一部だけ選んだ場合は選んだスライド) の中での順番
-            step = processed + 1
-            if not info.notes_text:
-                print(t("log_slide_skip", i=step, total=len(slides), num=slide_num))
-                slide_audio.append((info.index, b""))
-            else:
-                print(t("log_slide", i=step, total=len(slides), num=slide_num))
-
-                def on_chunk(i, total, text, _sn=slide_num):
-                    if self._cancel_event.is_set():
-                        raise _CancelledError()
-                    print(f"    ({i + 1}/{total}) {_unescape_display(text)}")
-
-                # 字幕オフでも <next> の発火タイミング計算に文のタイミングが必要なため、
-                # 常にタイミング付きで合成する
-                wav, timings, next_pos = engine.synthesize_with_timings(info.notes_text, on_chunk=on_chunk)
-                slide_timings[info.index] = timings
-                if next_pos:
-                    slide_next_positions[info.index] = next_pos
-                slide_audio.append((info.index, wav))
-
-            processed += 1
-            self.after(0, self.progress.set, processed / len(slides))
-
-        # PPTX出力
-        print(t("log_embedding"))
-        embed_audio(
-            input_path,
-            slide_audio,
-            output_path,
-            end_pause_ms=int(end_pause_sec * 1000),
-            slide_timings=slide_timings,
-            show_subtitles=use_subtitle,
-            subtitle_font_size=sub_size,
-            subtitle_font_name=sub_font_name,
-            subtitle_bottom_pct=sub_bottom,
-            subtitle_style=sub_style,
-            subtitle_font_color=sub_font_color,
-            subtitle_use_outline=sub_use_outline,
-            subtitle_outline_color=sub_outline_color,
-            subtitle_outline_width=sub_outline_width,
-            subtitle_use_glow=sub_use_glow,
-            subtitle_glow_color=sub_glow_color,
-            subtitle_glow_size=sub_glow_size,
-            subtitle_bg_color=sub_bg_color,
-            subtitle_bg_alpha=sub_bg_alpha,
-            subtitle_kuten_mode=sub_kuten_mode,
-            subtitle_touten_mode=sub_touten_mode,
-            subtitle_default_bold=sub_default_bold,
-            subtitle_default_italic=sub_default_italic,
-            subtitle_default_underline=sub_default_underline,
-            subtitle_math_bold=sub_math_bold,
-            slide_next_positions=slide_next_positions if slide_next_positions else None,
-            auto_next_interval_ms=int(auto_next_sec * 1000) if self.auto_next_enabled_var.get() else -1,
-        )
-
-        self.after(0, self.progress.set, 1.0)
-        print(t("log_done", name=os.path.basename(output_path)))
-        print(t("log_video_howto"))
-
+        if pipeline.generate(
+            self._settings_from_ui(), input_path, output_path,
+            selected_slides=self._selected_slides,
+            engine=self._create_engine(),
+            on_progress=lambda v: self.after(0, self.progress.set, v),
+            should_cancel=self._cancel_event.is_set,
+        ):
+            print(t("log_video_howto"))
 
 if __name__ == "__main__":
     app = App()

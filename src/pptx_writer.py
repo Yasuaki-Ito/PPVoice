@@ -163,8 +163,10 @@ def _apply_text_outline(run_element, outline_color: str = "000000", width_emu: i
 
 # <b>, </b>, <i>, </i>, <u>, </u>, <color=#RRGGBB>, </color>,
 # <font=名前>, </font>, <size=N>, </size> (大文字小文字対応)
+# 値の形式が違うタグ (<color=red> など) は notes._FORMAT_TAG と同じく書式にせず、文字として表示する
 _FORMAT_TAG = re.compile(
-    r"<(/?)(b|i|u|color|font|size)(?:=([^>]+))?>",
+    r"<(/?)(b|i|u|color|font|size)"
+    r"(?:=((?<=color=)#[0-9a-fA-F]{6}|(?<=font=)[^>]+|(?<=size=)[+\-]?\d+))?>",
     re.IGNORECASE,
 )
 # 数式マーカーで囲まれた LaTeX: \x13LaTeX\x14

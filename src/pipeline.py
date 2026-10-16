@@ -4,16 +4,16 @@
 """
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Callable
 
 from i18n import t
 from notes import _BRACE_PATTERN, _NEXT_TAG, _READING_PATTERN, Sentence, parse_notes
 from pptx_reader import read_slides
 from pptx_writer import _extract_click_groups, embed_audio
-from settings import Settings, parse_config_tags
+from settings import Settings, parse_cast_tags, parse_config_tags
 from tts.base import Timing, TTSEngine, VoiceParams
-from tts.openai_compat import OpenAICompatEngine
+from tts.openai_compat import OpenAICompatEngine, voice_short_name
 from tts.voicevox import VoicevoxEngine
 from tts.wav import _concat_wav
 
@@ -40,6 +40,20 @@ def _unescape_display(text: str) -> str:
 def read_config(input_path: str) -> dict[str, str]:
     """PPTX のノートにある <config> タグを解析する。"""
     return parse_config_tags([s.notes_text for s in read_slides(input_path) if s.notes_text])
+
+
+def read_cast(input_path: str) -> dict[str, dict[str, str]]:
+    """PPTX のノートにある <cast> タグを解析する。"""
+    return parse_cast_tags([s.notes_text for s in read_slides(input_path) if s.notes_text])
+
+
+def default_role_name(settings: Settings) -> str:
+    """既定の役の名前 (話者一覧を引かずに分かる範囲。話者が空なら空)。"""
+    if settings.role:
+        return settings.role
+    if settings.engine == "openai":
+        return voice_short_name(settings.speaker) if settings.speaker else ""
+    return settings.speaker
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +103,7 @@ def resolve_openai_voice(voices: list[str], voice: str) -> str:
 
 
 def create_engine(settings: Settings) -> TTSEngine:
-    """設定からエンジン (サーバ) を作る。声は create_voice で別に決める。"""
+    """設定からエンジン (サーバ) を作る。声は create_cast で別に決める。"""
     if settings.engine == "openai":
         return OpenAICompatEngine(base_url=settings.url, model=settings.model.strip() or "kokoro",
                                   api_key=settings.api_key.strip())
@@ -105,34 +119,109 @@ class VoiceSpec:
     intonation: float = 1.0
     volume: float = 1.0
     label: str = ""           # ログ表示用 (speaker=2 / voice=af_heart, model=kokoro)
+    name: str = ""            # 役名 (<speaker=...> で使う)
+    speaker: str = ""         # 実際に使う話者名 (VOICEVOX のクレジット表記) / 声の ID
+    styles: dict[str, int] = field(default_factory=dict)  # VOICEVOX: この話者のスタイル名 → ID (<style=...>)
+    instructions: str = ""    # OpenAI互換のみ
+    color: str = ""           # 字幕の文字色 (空なら字幕の既定の色)
+    subtitle_name: str = ""   # 字幕に出す名前 (空なら役名)
 
 
-def create_voice(settings: Settings, speakers=None) -> VoiceSpec:
-    """設定の話者 (名前) を解決して、役の声を作る。speakers は取得済みの話者一覧 (None なら取得する)。"""
-    if speakers is None and not (settings.engine == "openai" and settings.speaker):
-        speakers = fetch_speakers(settings)
+@dataclass
+class Cast:
+    """役の一覧。<speaker> のない文と各スライドの先頭は既定の役で読む。
+
+    未定義の役名・見つからないスタイルの警告は、この Cast を使う間 (1回の生成) に1度だけ出す。
+    """
+    default: VoiceSpec
+    roles: dict[str, VoiceSpec] = field(default_factory=dict)  # <cast> の役 (名前 → 声)
+    engine: str = "voicevox"
+    used: dict[str, int] = field(default_factory=dict)     # 役名 → 読んだ文の数
+    speakers_used: dict[str, None] = field(default_factory=dict)  # 使った話者名 (順序付きの集合)
+    _warned: set = field(default_factory=set)
+
+    def warn(self, key, message: str):
+        if key not in self._warned:
+            self._warned.add(key)
+            print(message)
+
+    def role(self, name: str | None) -> VoiceSpec:
+        if name is None:
+            return self.default
+        if name in self.roles:
+            return self.roles[name]
+        if name == self.default.name:
+            return self.default
+        self.warn(("role", name), t("log_role_unknown", name=name, used=self.default.name))
+        return self.default
+
+    @property
+    def label(self) -> str:
+        """ログ表示用。役が1つなら今までどおり声だけ。"""
+        if not self.roles:
+            return self.default.label
+        voices = {self.default.name: self.default, **self.roles}
+        return ", ".join(f"{name}: {v.label}" for name, v in voices.items())
+
+
+def _create_voice(settings: Settings, speakers, name: str, speaker: str, style: str, speed: float, pitch: float,
+                  intonation: float, volume: float, **extra) -> VoiceSpec:
+    """話者 (名前) を解決して役の声を作る。役名が空なら話者名 (OpenAI互換は声の名前の部分) にする。"""
     if settings.engine == "openai":
-        voice = settings.speaker or resolve_openai_voice(speakers, "")
-        label = f"voice={voice}, model={settings.model.strip() or 'kokoro'}"
-    else:
-        voice, _, _ = resolve_voicevox_style(speakers, settings.speaker, settings.style)
-        label = f"speaker={voice}"
-    return VoiceSpec(voice=voice, speed=settings.speed, pitch=settings.pitch,
-                     intonation=settings.intonation, volume=settings.volume, label=label)
+        voice = speaker or resolve_openai_voice(speakers, "")
+        return VoiceSpec(voice, speed, pitch, intonation, volume,
+                         label=f"voice={voice}, model={settings.model.strip() or 'kokoro'}",
+                         name=name or voice_short_name(voice), speaker=voice, **extra)
+    sid, sp_name, _ = resolve_voicevox_style(speakers, speaker, style)
+    styles = {st["name"]: st["id"] for sp in speakers if sp["name"] == sp_name for st in sp.get("styles", [])}
+    return VoiceSpec(sid, speed, pitch, intonation, volume, label=f"speaker={sid}",
+                     name=name or sp_name, speaker=sp_name, styles=styles, **extra)
 
 
-def voice_params(sentences: list[Sentence], voice: VoiceSpec) -> list[VoiceParams]:
-    """文ごとの声を決める: 文の音声タグ (<speed> など) があればその値、なければ役の値。"""
+def create_cast(settings: Settings, speakers=None) -> Cast:
+    """設定の既定の役と <cast> の役を解決する。speakers は取得済みの話者一覧 (None なら取得する)。"""
+    need_list = settings.engine == "voicevox" or not settings.speaker or any(
+        not r.speaker for r in settings.cast.values())
+    if speakers is None and need_list:
+        speakers = fetch_speakers(settings)
+    default = _create_voice(settings, speakers, settings.role, settings.speaker, settings.style, settings.speed,
+                            settings.pitch, settings.intonation, settings.volume)
+    roles = {
+        r.name: _create_voice(settings, speakers, r.name, r.speaker, r.style, r.speed, r.pitch, r.intonation,
+                              r.volume, instructions=r.instructions, color=r.color, subtitle_name=r.label)
+        for r in settings.cast.values()
+    }
+    return Cast(default, roles, engine=settings.engine)
+
+
+def voice_params(sentences: list[Sentence], cast: Cast) -> list[VoiceParams]:
+    """文ごとの声を決める: 文の役 (<speaker>) の声を、文の <style> と音声タグ (<speed> など) で上書きする。"""
     def pick(value, default):
         return value if value is not None else default
-    return [VoiceParams(voice=voice.voice, speed=pick(s.speed, voice.speed), pitch=pick(s.pitch, voice.pitch),
-                        intonation=pick(s.intonation, voice.intonation), volume=pick(s.volume, voice.volume))
-            for s in sentences]
+
+    result = []
+    for s in sentences:
+        role = cast.role(s.speaker)
+        voice = role.voice
+        if s.style:
+            if cast.engine == "openai":
+                cast.warn(("style",), t("log_style_ignored"))
+            elif s.style in role.styles:
+                voice = role.styles[s.style]
+            else:
+                cast.warn(("style", role.name, s.style),
+                          t("log_style_unknown", role=role.name, speaker=role.speaker, style=s.style))
+        cast.used[role.name] = cast.used.get(role.name, 0) + 1
+        cast.speakers_used.setdefault(role.speaker)
+        result.append(VoiceParams(voice=voice, speed=pick(s.speed, role.speed), pitch=pick(s.pitch, role.pitch),
+                                  intonation=pick(s.intonation, role.intonation),
+                                  volume=pick(s.volume, role.volume), instructions=role.instructions))
+    return result
 
 
 def synthesize_notes(
-    engine: TTSEngine, text: str, voice: VoiceSpec, pause_sec: float = 0.5,
-    split_sentence_ends: bool = False, on_chunk=None,
+    engine: TTSEngine, text: str, cast: Cast, pause_sec: float = 0.5,
+    split_sentence_ends: bool = False, on_chunk=None, turn_pause: float | None = None,
 ) -> tuple[bytes, list[Timing], list[tuple[int, float]]]:
     """ノートのテキストから WAV を作り、各文のタイミングと <next> の位置も返す。
 
@@ -140,6 +229,7 @@ def synthesize_notes(
         pause_sec: 文と文の間の無音 (<wait> の指定がない区切り)
         split_sentence_ends: 行の途中の文末 (. ! ?) でも区切る
         on_chunk: コールバック on_chunk(文の番号, 文の数, 字幕テキスト)
+        turn_pause: 役が替わる区切りの無音 (None なら pause_sec)
 
     Returns:
         (WAVバイナリ, [Timing, ...], [(sentence_index, char_ratio), ...])
@@ -151,16 +241,27 @@ def synthesize_notes(
     if not sentences:
         return b"", [], []
 
-    # pauses の None をデフォルト pause_sec に置換
-    pauses = [g if g is not None else pause_sec for g in parsed.pauses]
+    params = voice_params(sentences, cast)
+    roles = [cast.role(s.speaker) for s in sentences]
+
+    # pauses の None (<wait> の指定がない区切り) は、役が替わるなら turn_pause、それ以外は pause_sec
+    def gap(i: int, g: float | None) -> float:
+        if g is not None:
+            return g
+        if turn_pause is not None and roles[i] is not roles[i + 1]:
+            return turn_pause
+        return pause_sec
+    pauses = [gap(i, g) for i, g in enumerate(parsed.pauses)]
 
     def on_done(i: int):
         if on_chunk:
             on_chunk(i, len(sentences), sentences[i].display)
 
-    wav_chunks = engine.synthesize_sentences(sentences, voice_params(sentences, voice), on_done)
+    wav_chunks = engine.synthesize_sentences(sentences, params, on_done)
     wav, timings = _concat_wav(wav_chunks, pauses=pauses, sentences=[s.display for s in sentences],
                                leading_pause=parsed.leading_pause)
+    for timing, role in zip(timings, roles):
+        timing.speaker = role.name
     return wav, timings, parsed.next_positions
 
 
@@ -168,27 +269,34 @@ def synthesize_notes(
 # 生成
 # ---------------------------------------------------------------------------
 
+@dataclass
+class GenerateResult:
+    output: str
+    roles: dict[str, int]     # 役名 → 読んだ文の数
+    credits: list[str]        # VOICEVOX のクレジット表記 ("VOICEVOX:ずんだもん" など。VOICEVOX 以外は空)
+
+
 def generate(
     settings: Settings,
     input_path: str,
     output_path: str,
     selected_slides: set[int] | None = None,
     engine: TTSEngine | None = None,
-    voice: VoiceSpec | None = None,
+    cast: Cast | None = None,
     on_progress: Callable[[float], None] | None = None,
     should_cancel: Callable[[], bool] | None = None,
-) -> bool:
+) -> GenerateResult | None:
     """PPTX を読み込み、ノートを合成して音声付き PPTX を書き出す。
 
     Args:
         selected_slides: 生成するスライドの番号 (1始まり)。None なら全スライド
         engine: 作成済みのエンジン (None なら settings から作る)
-        voice: 役の声 (None なら settings の話者を解決する)
+        cast: 役の声 (None なら settings の話者を解決する)
         on_progress: 進捗 (0〜1) を受け取るコールバック
         should_cancel: True を返すと中断する (Cancelled を送出)
 
     Returns:
-        書き出したら True (ノートのあるスライドがなければ False)
+        書き出した結果 (ノートのあるスライドがなければ None)
     """
     def check_cancel():
         if should_cancel and should_cancel():
@@ -200,8 +308,8 @@ def generate(
 
     if engine is None:
         engine = create_engine(settings)
-    if voice is None:
-        voice = create_voice(settings)
+    if cast is None:
+        cast = create_cast(settings)
 
     # スライド読み込み
     print(t("log_reading_pptx", path=input_path))
@@ -216,11 +324,11 @@ def generate(
     notes_count = sum(1 for s in slides if s.notes_text)
     if notes_count == 0:
         print(t("log_no_notes"))
-        return False
+        return None
     print(t("log_notes_count", n=notes_count))
 
     # 音声合成
-    print(t("log_synthesizing", desc=voice.label, pause=settings.pause))
+    print(t("log_synthesizing", desc=cast.label, pause=settings.pause))
 
     slide_audio = []
     slide_timings = {}
@@ -244,8 +352,9 @@ def generate(
 
             # 字幕オフでも <next> の発火タイミング計算に文のタイミングが必要なため、
             # 常にタイミング付きで合成する
-            wav, timings, next_pos = synthesize_notes(engine, info.notes_text, voice, settings.pause,
-                                                      settings.split_sentences, on_chunk=on_chunk)
+            wav, timings, next_pos = synthesize_notes(engine, info.notes_text, cast, settings.pause,
+                                                      settings.split_sentences, on_chunk=on_chunk,
+                                                      turn_pause=settings.turn_pause)
             slide_timings[info.index] = timings
             if next_pos:
                 slide_next_positions[info.index] = next_pos
@@ -266,8 +375,15 @@ def generate(
     )
 
     progress(1.0)
+    if len(cast.used) > 1:
+        print(t("log_role_counts", counts=", ".join(f"{name} {n}" for name, n in cast.used.items())))
+    credits = []
+    if isinstance(engine, VoicevoxEngine) and (engine.engine_name() or "VOICEVOX").startswith("VOICEVOX"):
+        credits = [f"VOICEVOX:{name}" for name in cast.speakers_used]
+        if credits:
+            print(t("log_credits", credits=t("credit_sep").join(credits)))
     print(t("log_done", name=os.path.basename(output_path)))
-    return True
+    return GenerateResult(os.path.abspath(output_path), dict(cast.used), credits)
 
 
 # ---------------------------------------------------------------------------

@@ -194,6 +194,15 @@ class VoicevoxEngine(TTSEngine):
                 wavs[i] = wav
         return wavs
 
+    def engine_name(self) -> str | None:
+        """エンジンの名前 (/engine_manifest の name。例: "VOICEVOX Engine")。取得できなければ None。"""
+        try:
+            resp = requests.get(f"{self.base_url}/engine_manifest", timeout=5)
+            resp.raise_for_status()
+            return resp.json().get("name")
+        except (requests.RequestException, ValueError, AttributeError):
+            return None
+
     def list_speakers(self, timeout: float | tuple[float, float] | None = None) -> list[dict]:
         """利用可能な話者一覧を取得する。
 

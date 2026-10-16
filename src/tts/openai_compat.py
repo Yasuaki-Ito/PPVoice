@@ -115,19 +115,18 @@ class OpenAICompatEngine(TTSEngine):
 
     def _speech(self, s: Sentence, p: VoiceParams) -> bytes:
         """1文を合成して WAV を返す (声は p.voice = 声の ID)。"""
-        resp = requests.post(
-            f"{self.base_url}/audio/speech",
-            headers=self._headers(),
-            json={
-                "model": self.model,
-                "input": s.reading,
-                "voice": p.voice,
-                "response_format": "pcm",
-                "speed": p.speed,
-                "stream": False,
-            },
-            timeout=self.timeout,
-        )
+        body = {
+            "model": self.model,
+            "input": s.reading,
+            "voice": p.voice,
+            "response_format": "pcm",
+            "speed": p.speed,
+            "stream": False,
+        }
+        if p.instructions:
+            body["instructions"] = p.instructions
+        resp = requests.post(f"{self.base_url}/audio/speech", headers=self._headers(), json=body,
+                             timeout=self.timeout)
         if not resp.ok:
             raise TTSServerError(self._error_message(resp, s))
         return _pcm_to_wav(_scale_pcm(resp.content, p.volume))

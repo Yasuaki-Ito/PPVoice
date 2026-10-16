@@ -63,6 +63,9 @@ def load_settings(args, input_path: str | None) -> Settings:
     if input_path:
         settings.apply_config(pipeline.read_config(input_path),
                               warn=lambda k, v: print(i18n.t("log_config_invalid", key=k, value=v), file=sys.stderr))
+        for name, values in pipeline.read_cast(input_path).items():
+            settings.apply_cast({name: values}, warn=lambda k, v, name=name: print(
+                i18n.t("log_cast_invalid", name=name, key=k, value=v), file=sys.stderr))
     if getattr(args, "engine", None):
         settings.set_engine(args.engine)
     overrides = {}
@@ -118,9 +121,9 @@ def cmd_generate(args) -> dict:
         engine = pipeline.create_engine(settings)
         # ログは stderr へ (結果だけを stdout に出すため)
         with contextlib.redirect_stdout(sys.stderr):
-            voice = pipeline.create_voice(settings)
-            done = pipeline.generate(settings, args.input, output, selected_slides=parse_slides(args.slides),
-                                     engine=engine, voice=voice)
+            cast = pipeline.create_cast(settings)
+            result = pipeline.generate(settings, args.input, output, selected_slides=parse_slides(args.slides),
+                                       engine=engine, cast=cast)
     except requests.RequestException as e:
         raise server_error(settings, e)
     except ValueError as e:
@@ -130,8 +133,9 @@ def cmd_generate(args) -> dict:
         if type(e).__name__ == "TTSServerError":
             raise CliError(str(e).strip(), EXIT_SERVER)
         raise
-    return {"output": os.path.abspath(output) if done else None, "generated": done,
-            "engine": settings.engine, "voice": voice.label}
+    return {"output": result.output if result else None, "generated": result is not None,
+            "engine": settings.engine, "voice": cast.label,
+            "roles": result.roles if result else {}, "credits": result.credits if result else []}
 
 
 def cmd_check(args) -> dict:
@@ -140,6 +144,8 @@ def cmd_check(args) -> dict:
     selected = parse_slides(args.slides)
     slides = read_slides(args.input)
     next_checks = {c.slide: c for c in pipeline.check_next_tags(args.input)}
+    default_role = pipeline.default_role_name(settings)
+    roles: dict[str, int] = {}   # 役名 → 文の数 (ノートに出てくる順)
     result_slides = []
     for si in slides:
         num = si.index + 1
@@ -147,27 +153,44 @@ def cmd_check(args) -> dict:
             continue
         parsed = parse_notes(si.notes_text, settings.split_sentences) if si.notes_text else None
         c = next_checks[num]
+        sentences = parsed.sentences if parsed else []
+        for s in sentences:
+            name = s.speaker or default_role
+            roles[name] = roles.get(name, 0) + 1
         result_slides.append({
             "slide": num,
-            "sentences": [{"subtitle": pipeline._unescape_display(s.display), "reading": s.reading}
-                          for s in (parsed.sentences if parsed else [])],
+            "sentences": [{"subtitle": pipeline._unescape_display(s.display), "reading": s.reading,
+                           "role": s.speaker or default_role, "style": s.style} for s in sentences],
             "animations": c.animations, "next": c.nexts, "next_status": c.status.strip(" ←"),
         })
     # 話者が一覧にあるか (サーバにつながる場合だけ)
-    speaker_check = None
     try:
         speakers = pipeline.fetch_speakers(settings)
-        if settings.engine == "openai":
-            available = settings.speaker in speakers if settings.speaker else None
-        else:
-            names = {sp["name"]: [st["name"] for st in sp.get("styles", [])] for sp in speakers}
-            available = (settings.speaker in names and (not settings.style or settings.style in names[settings.speaker])
-                         ) if settings.speaker else None
-        speaker_check = {"server": True, "speaker": settings.speaker, "style": settings.style, "available": available}
+        server = True
     except requests.RequestException:
-        speaker_check = {"server": False, "speaker": settings.speaker, "style": settings.style, "available": None}
+        speakers, server = None, False
+
+    def available(speaker: str, style: str):
+        if not server or not speaker:
+            return None
+        if settings.engine == "openai":
+            return speaker in speakers
+        names = {sp["name"]: [st["name"] for st in sp.get("styles", [])] for sp in speakers}
+        return speaker in names and (not style or style in names[speaker])
+
+    speaker_check = {"server": server, "speaker": settings.speaker, "style": settings.style,
+                     "available": available(settings.speaker, settings.style)}
+    # 役: 既定の役 + <cast> の役。ノートにあって定義されていない役は undefined_roles に
+    cast = [{"name": default_role, "default": True, "speaker": settings.speaker, "style": settings.style,
+             "available": speaker_check["available"], "sentences": roles.get(default_role, 0)}]
+    cast += [{"name": r.name, "default": False, "speaker": r.speaker, "style": r.style,
+              "available": available(r.speaker, r.style), "sentences": roles.get(r.name, 0)}
+             for r in settings.cast.values() if r.name != default_role]
+    defined = {c["name"] for c in cast}
+    undefined = [name for name in roles if name not in defined]
     return {"engine": settings.engine, "url": settings.url, "config": parse_config_tags(
-        [s.notes_text for s in slides if s.notes_text]), "speaker_check": speaker_check, "slides": result_slides}
+        [s.notes_text for s in slides if s.notes_text]), "speaker_check": speaker_check, "cast": cast,
+        "undefined_roles": undefined, "slides": result_slides}
 
 
 def cmd_speakers(args) -> dict:
@@ -202,12 +225,22 @@ def print_text(command: str, result: dict):
                   "ok" if sc["available"] else "not found" if sc["available"] is False else "not specified")
         print(f"engine: {result['engine']} ({result['url']}), speaker: {sc['speaker'] or '-'}"
               f"{' / ' + sc['style'] if sc['style'] else ''} [{status}]")
+        if len(result["cast"]) > 1 or result["undefined_roles"]:
+            for c in result["cast"]:
+                ok = {True: "ok", False: "not found", None: "-"}[c["available"]]
+                print(f"role {c['name'] or '-'}{' (default)' if c['default'] else ''}: {c['speaker'] or '-'}"
+                      f"{' / ' + c['style'] if c['style'] else ''} [{ok}], {c['sentences']} sentences")
+            for name in result["undefined_roles"]:
+                print(f"role {name}: not defined (read by the default role)")
         for sl in result["slides"]:
             note = f"  ({sl['next_status']})" if sl["next_status"] else ""
             print(f"--- slide {sl['slide']}: {len(sl['sentences'])} sentences, "
                   f"<next> {sl['next']} / animations {sl['animations']}{note}")
+            multi = len(result["cast"]) > 1 or result["undefined_roles"]
             for s in sl["sentences"]:
-                print(f"  {s['subtitle']}" + (f"  [reading: {s['reading']}]" if s["reading"] != s["subtitle"] else ""))
+                role = f"{s['role']}{'/' + s['style'] if s['style'] else ''}: " if multi else ""
+                print(f"  {role}{s['subtitle']}"
+                      + (f"  [reading: {s['reading']}]" if s["reading"] != s["subtitle"] else ""))
 
 
 def build_parser() -> argparse.ArgumentParser:

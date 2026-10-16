@@ -15,6 +15,7 @@ class VoiceParams:
     pitch: float = 0.0
     intonation: float = 1.0
     volume: float = 1.0
+    instructions: str = ""    # OpenAI互換のみ: 読み方の指示
 
 
 @dataclass
@@ -23,7 +24,7 @@ class Timing:
     text: str                 # 字幕テキスト (notes._to_display の出力)
     start_ms: int
     dur_ms: int
-    speaker: str | None = None  # 役 (複数話者用。None は既定の役)
+    speaker: str | None = None  # 役名
 
 
 class TTSEngine(ABC):

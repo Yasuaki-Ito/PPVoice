@@ -156,7 +156,7 @@ def test_adjacent_readings_with_digits():
 
 def test_many_placeholders():
     text = "".join(f"{i}{{a{i}|b{i}}}" for i in range(15))
-    raw, _, _, _ = _split_sentences(text)
+    raw, _, _, _, _ = _split_sentences(text)
     assert raw == [text]
 
 

@@ -8,7 +8,7 @@ import pytest
 import requests
 
 from notes import parse_notes
-from pipeline import VoiceSpec, voice_params
+from pipeline import Cast, VoiceSpec, voice_params
 from tts import voicevox
 from tts.base import Timing, VoiceParams
 from tts.openai_compat import _scale_pcm, group_voices, voice_short_name
@@ -156,7 +156,7 @@ def test_concat_rejects_mixed_formats():
 def test_voice_params_use_sentence_tags_then_role_defaults():
     sentences = parse_notes("普通の文。\n<speed=1.5><volume=0.5>速い文。").sentences
     spec = VoiceSpec(voice=3, speed=1.1, pitch=0.02, intonation=0.9, volume=0.8)
-    assert voice_params(sentences, spec) == [
+    assert voice_params(sentences, Cast(spec)) == [
         VoiceParams(3, 1.1, 0.02, 0.9, 0.8),
         VoiceParams(3, 1.5, 0.02, 0.9, 0.5),
     ]

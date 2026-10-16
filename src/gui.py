@@ -125,6 +125,8 @@ class App(_AppBase):
         # 選びたい話者 (話者名, スタイル名)。OpenAI互換は (声の ID, "")。
         # 話者一覧を取得したときに、この名前の話者を選ぶ
         self._wanted_voice: tuple[str, str] = ("", "")
+        # 画面にまだ欄のない設定 (役・話者交代の間)。<config> / <cast> から読み、そのまま保存・生成に使う
+        self._voice_extra = Settings()
         self._test_stop = False
 
         self._build_ui()
@@ -683,12 +685,15 @@ class App(_AppBase):
         # 入力ファイルを指定するたびに出力ファイル名も追従させる
         base = os.path.splitext(path)[0]
         self.output_var.set(base + "_speech.pptx")
-        # <config> タグの自動読み込み
+        # <config> / <cast> タグの自動読み込み (役はファイルごとに読み直す)
         try:
             config = pipeline.read_config(path)
-            if config:
-                self._apply_config(config)
-                details = "\n".join(f"  {k}={v}" for k, v in config.items())
+            casts = pipeline.read_cast(path)
+            self._voice_extra.cast = {}
+            if config or casts:
+                self._apply_config(config, casts)
+                details = "\n".join([f"  {k}={v}" for k, v in config.items()]
+                                    + [f"  <cast {name}>" for name in casts])
                 self._log(t("log_config_loaded", details=details))
         except Exception:
             pass
@@ -874,7 +879,7 @@ class App(_AppBase):
     def _create_engine(self, settings: Settings):
         """設定から TTS エンジンと役の声を作る (取得済みの話者一覧を使う)。"""
         speakers = self._speakers_cache if settings.engine == "voicevox" else self._openai_voices
-        return pipeline.create_engine(settings), pipeline.create_voice(settings, speakers=speakers)
+        return pipeline.create_engine(settings), pipeline.create_cast(settings, speakers=speakers)
 
     def _current_voice_id(self) -> str:
         """OpenAI互換で選択中の声の ID。"""
@@ -1077,20 +1082,20 @@ class App(_AppBase):
             return
 
         settings = self._settings_from_ui()
-        engine, voice = self._create_engine(settings)
+        engine, cast = self._create_engine(settings)
 
         self.test_play_btn.configure(text=t("synthesizing"), state="disabled")
         thread = threading.Thread(
             target=self._test_play_worker,
-            args=(text, settings, engine, voice),
+            args=(text, settings, engine, cast),
             daemon=True,
         )
         thread.start()
 
-    def _test_play_worker(self, text, settings, engine, voice):
+    def _test_play_worker(self, text, settings, engine, cast):
         try:
-            wav, timings, _ = pipeline.synthesize_notes(engine, text, voice, settings.pause,
-                                                        settings.split_sentences)
+            wav, timings, _ = pipeline.synthesize_notes(engine, text, cast, settings.pause,
+                                                        settings.split_sentences, turn_pause=settings.turn_pause)
             self.after(0, lambda: self.test_play_btn.configure(text=t("stop_play"), state="normal"))
 
             # 字幕を再生タイミングに合わせてログに表示
@@ -1179,6 +1184,9 @@ class App(_AppBase):
         s.italic = self.default_italic_var.get()
         s.underline = self.default_underline_var.get()
         s.math_bold = self.math_bold_var.get()
+        s.role = self._voice_extra.role
+        s.cast = dict(self._voice_extra.cast)
+        s.turn_pause = self._voice_extra.turn_pause
         return s
 
     def _load_settings_to_ui(self, s: Settings):
@@ -1219,15 +1227,21 @@ class App(_AppBase):
         self.default_italic_var.set(s.italic)
         self.default_underline_var.set(s.underline)
         self.math_bold_var.set(s.math_bold)
+        self._voice_extra.role = s.role
+        self._voice_extra.cast = dict(s.cast)
+        self._voice_extra.turn_pause = s.turn_pause
         # 話者は名前で選ぶ (一覧を取得していなければ、取得したときに選ぶ)
         self._wanted_voice = (s.speaker, s.style)
         if self._speaker_map:
             self._select_voice(s.speaker, s.style)
 
-    def _apply_config(self, config: dict):
-        """解析済みの <config> を画面に反映する。"""
+    def _apply_config(self, config: dict, casts: dict | None = None):
+        """解析済みの <config> / <cast> を画面に反映する。"""
         s = self._settings_from_ui()
         s.apply_config(config, warn=lambda k, v: self._log(t("log_config_invalid", key=k, value=v)))
+        for name, values in (casts or {}).items():
+            s.apply_cast({name: values}, warn=lambda k, v, name=name: self._log(
+                t("log_cast_invalid", name=name, key=k, value=v)))
         self._load_settings_to_ui(s)
 
     def _set_color(self, hex_val: str, var: ctk.StringVar, btn: ctk.CTkButton):
@@ -1279,8 +1293,9 @@ class App(_AppBase):
                     break
 
     def _generate_config_tag(self) -> str:
-        """現在の GUI 設定を <config ...> タグ文字列として生成する。"""
-        return self._settings_from_ui().to_config_tag()
+        """現在の GUI 設定を <config ...> タグ (と役の数だけの <cast ...> タグ) の文字列として生成する。"""
+        s = self._settings_from_ui()
+        return "\n".join([s.to_config_tag(), *s.to_cast_tags()])
 
     def _on_save_config(self):
         """設定保存ポップアップを表示する。"""
@@ -1505,11 +1520,11 @@ class App(_AppBase):
             output_path = os.path.splitext(input_path)[0] + "_speech.pptx"
 
         settings = self._settings_from_ui()
-        engine, voice = self._create_engine(settings)
+        engine, cast = self._create_engine(settings)
         if pipeline.generate(
             settings, input_path, output_path,
             selected_slides=self._selected_slides,
-            engine=engine, voice=voice,
+            engine=engine, cast=cast,
             on_progress=lambda v: self.after(0, self.progress.set, v),
             should_cancel=self._cancel_event.is_set,
         ):

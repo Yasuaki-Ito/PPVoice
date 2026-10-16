@@ -18,17 +18,23 @@ _BRACE_PATTERN = re.compile(r"\{([^|}]+)\}")
 
 # 書式タグパターン: <b>, </b>, <i>, </i>, <u>, </u>, <color=#RRGGBB>, </color>,
 # <font=...>, </font>, <size=N>, </size>, <br>, <wait=Ns>,
-# <speed=N>, <pitch=N>, <intonation=N>, <volume=N>, <config ...>
+# <speed=N>, <pitch=N>, <intonation=N>, <volume=N>, <config ...>, <cast ...>, <speaker=...>, <style=...>
 _FORMAT_TAG = re.compile(
     r"</?(?:b|i|u|color(?:=#[0-9a-fA-F]{6})?|font(?:=[^>]+)?|size(?:=[+\-]?\d+)?"
     r"|speed(?:=[\d.]+)?|pitch(?:=[+\-]?[\d.]+)?"
     r"|intonation(?:=[\d.]+)?|volume(?:=[\d.]+)?)>"
-    r"|<br\s*/?>|<wait=[\d.]+\s*(?:ms|s)?\s*>|<config\s[^>]*>|<next\s*/?>",
+    r"|<br\s*/?>|<wait=[\d.]+\s*(?:ms|s)?\s*>|<(?:config|cast)\s[^>]*>|<next\s*/?>"
+    r"|<(?:speaker|style)=[^>]+>",
     re.IGNORECASE,
 )
 
-# <config ...> タグ
-_CONFIG_TAG = re.compile(r"<config\s[^>]*>", re.IGNORECASE)
+# <config ...> / <cast ...> タグ (資料全体の設定。読み上げ・字幕には影響しない)
+_CONFIG_TAG = re.compile(r"<(?:config|cast)\s[^>]*>", re.IGNORECASE)
+
+# <speaker=役名> (次の <speaker> まで続く。行の途中なら そこで文を区切る) と
+# <style=スタイル名> (その文だけ)。名前は日本語を含むので > 以外の文字。引用符は外す
+_SPEAKER_TAG = re.compile(r"<speaker=\s*\"?([^\">]*?)\"?\s*>", re.IGNORECASE)
+_STYLE_TAG = re.compile(r"<style=\s*\"?([^\">]*?)\"?\s*>", re.IGNORECASE)
 
 # <br> 分割パターン
 _SPLIT_BR = re.compile(r"<br\s*/?>", re.IGNORECASE)
@@ -118,6 +124,8 @@ def _to_display(text: str) -> str:
     text = _INTONATION_TAG.sub("", text)
     text = _VOLUME_TAG.sub("", text)
     text = _NEXT_TAG.sub("", text)
+    text = _SPEAKER_TAG.sub("", text)
+    text = _STYLE_TAG.sub("", text)
     # <br> → 改行 (エスケープ済みのものはマッチしない)
     return _SPLIT_BR.sub("\n", text)
 
@@ -164,7 +172,7 @@ def _split_at_sentence_ends(line: str) -> str:
 
 def _split_sentences(
     text: str, split_sentence_ends: bool = False,
-) -> tuple[list[str], list[float | None], float, list[tuple[int, float]]]:
+) -> tuple[list[str], list[float | None], float, list[tuple[int, float]], list[str | None]]:
     """テキストを改行と <wait=Ns> で分割する。
 
     <br> は分割せず保持する（字幕でテキストボックス内改行になる）。
@@ -176,13 +184,14 @@ def _split_sentences(
             (英語のように改行なしの段落で書かれたノート向け)
 
     Returns:
-        (sentences, pauses, leading_pause, next_positions)
+        (sentences, pauses, leading_pause, next_positions, speakers)
         - sentences: 分割された文のリスト
         - pauses: 各文の後の無音秒数 (len = len(sentences) - 1)
           None はデフォルト pause_sec を使用、float は指定秒数
         - leading_pause: 最初の文の前の無音秒数 (0.0 = なし)
         - next_positions: [(sentence_index, char_ratio), ...]
           sentence_index=-1 は先頭 <next> (ms=0)
+        - speakers: 各文の役 (<speaker=...>。None は既定の役)。<speaker> だけの行も次の文に効く
     """
     # {...|...} と {...} をプレースホルダに置換して分割から保護
     placeholders: list[str] = []
@@ -204,6 +213,9 @@ def _split_sentences(
     _NEXT_PH = "\x12"
     protected = _NEXT_TAG.sub(_NEXT_PH, protected)
 
+    # <speaker=...> の前で行を区切る (行の途中で話者が替わる場合)。行頭なら空の行ができるだけ
+    protected = _SPEAKER_TAG.sub(lambda m: "\n" + m.group(0), protected)
+
     # 文末で区切る場合は改行を入れる ({...} と <next> はプレースホルダ化済みなので中では区切らない)
     if split_sentence_ends:
         protected = "\n".join(_split_at_sentence_ends(line) for line in protected.split("\n"))
@@ -216,6 +228,8 @@ def _split_sentences(
     # <next> の位置を文ごとに記録
     next_positions: list[tuple[int, float]] = []
     pending_next: bool = False  # 文の境界に <next> がある
+    speakers: list[str | None] = []
+    speaker: str | None = None  # 今の役 (None は既定の役)
 
     lines = protected.split("\n")
     for li, line in enumerate(lines):
@@ -233,6 +247,9 @@ def _split_sentences(
                 if not chunk:
                     pi += 1
                     continue
+                # 話者の切り替え (読み上げる文字がない行でも効く)
+                for m in _SPEAKER_TAG.finditer(chunk):
+                    speaker = m.group(1).strip() or None
                 # <next> プレースホルダが含まれるか確認
                 has_next = _NEXT_PH in chunk
                 # <next> を除去してテキストを取得
@@ -269,6 +286,7 @@ def _split_sentences(
                                 ratio = 0.0
                             next_positions.append((len(sentences), min(ratio, 1.0)))
                     sentences.append(clean)
+                    speakers.append(speaker)
                 elif has_next:
                     # テキストなしで <next> のみ → 境界として保留
                     pending_next = True
@@ -288,7 +306,7 @@ def _split_sentences(
     if pending_next and sentences:
         next_positions.append((len(sentences) - 1, 1.0))
 
-    return [_restore(s) for s in sentences], pauses, leading_pause, next_positions
+    return [_restore(s) for s in sentences], pauses, leading_pause, next_positions, speakers
 
 
 # ---------------------------------------------------------------------------
@@ -306,6 +324,8 @@ class Sentence:
     intonation: float | None = None  # <intonation=N>
     volume: float | None = None  # <volume=N>
     accents: list[tuple[str, int]] = field(default_factory=list)  # {表示|読み|N} のアクセント指定
+    speaker: str | None = None   # <speaker=役名> (None は既定の役)
+    style: str | None = None     # <style=スタイル名> (None は役のスタイル)
 
 
 @dataclass
@@ -323,15 +343,21 @@ def _last_tag_value(pattern: re.Pattern, text: str) -> float | None:
     return float(matches[-1].group(1)) if matches else None
 
 
+def _last_tag_text(pattern: re.Pattern, text: str) -> str | None:
+    """文中で最後にマッチした名前のタグ (<style=...>) の値を返す。"""
+    matches = [m.group(1).strip() for m in pattern.finditer(text)]
+    return matches[-1] or None if matches else None
+
+
 def parse_notes(text: str, split_sentence_ends: bool = False) -> ParsedNotes:
     """ノートのテキストを文単位に解析する。
 
     Args:
         split_sentence_ends: True なら行の途中の文末 (. ! ?) でも区切る
     """
-    # <config> タグを事前除去 (configだけの行が空文にならないよう)
+    # <config> / <cast> タグを事前除去 (configだけの行が空文にならないよう)
     text = _CONFIG_TAG.sub("", text)
-    raw_sentences, pauses, leading_pause, next_positions = _split_sentences(text, split_sentence_ends)
+    raw_sentences, pauses, leading_pause, next_positions, speakers = _split_sentences(text, split_sentence_ends)
     sentences = [
         Sentence(
             raw=s,
@@ -342,7 +368,9 @@ def parse_notes(text: str, split_sentence_ends: bool = False) -> ParsedNotes:
             intonation=_last_tag_value(_INTONATION_TAG, s),
             volume=_last_tag_value(_VOLUME_TAG, s),
             accents=_extract_accents(s),
+            speaker=speaker,
+            style=_last_tag_text(_STYLE_TAG, s),
         )
-        for s in raw_sentences
+        for s, speaker in zip(raw_sentences, speakers)
     ]
     return ParsedNotes(sentences, pauses, leading_pause, next_positions)

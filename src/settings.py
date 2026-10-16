@@ -1,8 +1,11 @@
-"""PPVoice の設定 (音声・字幕・アニメーション) と <config> タグの読み書き
+"""PPVoice の設定 (音声・字幕・アニメーション) と <config> / <cast> タグの読み書き
 
 GUI と CLI の両方で使う。GUI はウィジェット ⇔ Settings の変換だけを行う。
 話者は名前で持ち (VOICEVOX: 話者名とスタイル名 / OpenAI互換: 声の ID)、ID への解決は
-声を作るとき (pipeline.create_voice) に行う。
+声を作るとき (pipeline.create_cast) に行う。
+
+役 (キャスト): <config> の話者・速度などが既定の役 (名前は role、省略すると話者名)。
+<cast 名前 speaker=... ...> で役を追加し、ノートの <speaker=名前> で切り替える。
 """
 
 import re
@@ -12,6 +15,7 @@ DEFAULT_URLS = {"voicevox": "http://localhost:50021", "openai": "http://localhos
 ENGINES = tuple(DEFAULT_URLS)
 
 _CONFIG_RE = re.compile(r"<config\s([^>]*)>", re.IGNORECASE)
+_CAST_RE = re.compile(r'<cast\s+(?:"([^"]*)"|([^\s>="]+))([^>]*)>', re.IGNORECASE)
 _KV_RE = re.compile(r'([\w]+)=(?:"([^"]*)"|(\S+))')
 
 _TRUE = ("on", "true", "1")
@@ -27,12 +31,74 @@ def parse_config_tags(notes_list: list[str]) -> dict[str, str]:
     return config
 
 
+def parse_cast_tags(notes_list: list[str]) -> dict[str, dict[str, str]]:
+    """ノートのテキストのリストから <cast 名前 ...> タグを解析する。同じ名前のタグは後の値が優先。"""
+    casts: dict[str, dict[str, str]] = {}
+    for notes in notes_list:
+        for m in _CAST_RE.finditer(notes):
+            name = (m.group(1) if m.group(1) is not None else m.group(2)).strip()
+            if not name:
+                continue
+            values = casts.setdefault(name, {})
+            for kv in _KV_RE.finditer(m.group(3)):
+                values[kv.group(1)] = kv.group(2) if kv.group(2) is not None else kv.group(3)
+    return casts
+
+
+def _quote(key: str, value) -> str:
+    s = str(value)
+    return f'{key}="{s}"' if " " in s or not s else f"{key}={s}"
+
+
 def _color(value: str) -> str:
     """色の表記を #RRGGBB (大文字) にそろえる。"""
     value = value.strip()
     if not value.startswith("#"):
         value = "#" + value
     return value.upper()
+
+
+@dataclass
+class Role:
+    """役 (<cast>)。話者は名前で持つ。"""
+    name: str
+    speaker: str = ""                # VOICEVOX: 話者名 / OpenAI互換: 声の ID (空なら一覧の最初)
+    style: str = ""                  # VOICEVOX のスタイル名 (空ならその話者の最初のスタイル)
+    speed: float = 1.0
+    pitch: float = 0.0
+    intonation: float = 1.0
+    volume: float = 1.0
+    color: str = ""                  # 字幕の文字色 (空なら字幕の既定の色)
+    label: str = ""                  # 字幕に出す名前 (空なら役名)
+    instructions: str = ""           # OpenAI互換のみ: 読み方の指示 (gpt-4o-mini-tts など)
+
+    def apply(self, values: dict[str, str], warn=None) -> None:
+        """解析済みの <cast> の値を反映する。値の形式が違うキーは飛ばし、warn(key, value) で知らせる。"""
+        for key, value in values.items():
+            try:
+                if key in ("speed", "pitch", "intonation", "volume"):
+                    setattr(self, key, float(value))
+                elif key == "color":
+                    setattr(self, key, _color(value))
+                elif key in ("speaker", "style", "label", "instructions"):
+                    setattr(self, key, value)
+                else:
+                    raise ValueError(key)
+            except ValueError:
+                if warn:
+                    warn(key, value)
+
+    def to_tag(self) -> str:
+        parts = [f'"{self.name}"' if " " in self.name else self.name]
+        for key in ("speaker", "style"):
+            if getattr(self, key):
+                parts.append(_quote(key, getattr(self, key)))
+        parts += [f"speed={self.speed:.1f}", f"pitch={self.pitch:.2f}",
+                  f"intonation={self.intonation:.1f}", f"volume={self.volume:.1f}"]
+        for key in ("color", "label", "instructions"):
+            if getattr(self, key):
+                parts.append(_quote(key, getattr(self, key)))
+        return "<cast " + " ".join(parts) + ">"
 
 
 @dataclass
@@ -45,12 +111,15 @@ class Settings:
     api_key: str = ""                # OpenAI互換のみ。PPTX に残るので <config> には保存しない
     speaker: str = ""                # VOICEVOX: 話者名 / OpenAI互換: 声の ID
     style: str = ""                  # VOICEVOX のスタイル名
+    role: str = ""                   # 既定の役の名前 (<speaker=...> で使う)。空なら話者名
+    cast: dict[str, Role] = field(default_factory=dict)  # <cast> で追加した役 (名前 → 役)
     # --- 音声 ---
     speed: float = 1.0
     pitch: float = 0.0
     intonation: float = 1.0
     volume: float = 1.0
     pause: float = 0.5
+    turn_pause: float | None = None  # 話者が替わるときの間。None なら pause と同じ
     end_pause: float = 2.0
     split_sentences: bool = False    # 文末 (. ! ?) でも区切る。エンジンを切り替えると初期値に戻る
     # --- アニメーション ---
@@ -111,11 +180,13 @@ class Settings:
             self.style = ""
         types = {f.name: f.type for f in fields(self)}
         for key, value in config.items():
-            if key in ("engine", "urls", "api_key") or key not in types:
+            if key in ("engine", "urls", "api_key", "cast") or key not in types:
                 continue
             try:
                 kind = types[key]
-                if kind in ("bool", bool):
+                if key == "turn_pause":
+                    self.turn_pause = float(value) if value.strip() else None
+                elif kind in ("bool", bool):
                     setattr(self, key, value.lower() in _TRUE)
                 elif kind in ("int", int):
                     setattr(self, key, int(value))
@@ -129,13 +200,21 @@ class Settings:
                 if warn:
                     warn(key, value)
 
+    def apply_cast(self, casts: dict[str, dict[str, str]], warn=None) -> None:
+        """解析済みの <cast> を役に反映する。既にある役は、書かれたキーだけ上書きする。"""
+        for name, values in casts.items():
+            self.cast.setdefault(name, Role(name)).apply(values, warn=warn)
+
+    def to_cast_tags(self) -> list[str]:
+        """<cast ...> タグの文字列のリスト (役の数だけ)。"""
+        return [role.to_tag() for role in self.cast.values()]
+
     def to_config_tag(self) -> str:
         """<config ...> タグの文字列にする (API キーと URL は保存しない)。"""
         parts: list[str] = []
 
         def add(key, val):
-            s = str(val)
-            parts.append(f'{key}="{s}"' if " " in s or not s else f"{key}={s}")
+            parts.append(_quote(key, val))
 
         def onoff(v: bool) -> str:
             return "on" if v else "off"
@@ -150,8 +229,12 @@ class Settings:
                 add("speaker", self.speaker)
             if self.style:
                 add("style", self.style)
+        if self.role:
+            add("role", self.role)
         # 音声
         add("pause", f"{self.pause:.1f}")
+        if self.turn_pause is not None:
+            add("turn_pause", f"{self.turn_pause:.1f}")
         add("speed", f"{self.speed:.1f}")
         add("pitch", f"{self.pitch:.2f}")
         add("intonation", f"{self.intonation:.1f}")

@@ -18,7 +18,7 @@ PPVoice turns the **speaker notes** of a PowerPoint file into narration and gene
 - **Re-synthesize only changed slides** — From the second time, only slides whose notes or settings changed are synthesized
 - **Saved settings** — Store voice and subtitle settings, roles, and the dictionary in the notes of the PPTX and restore them automatically next time
 - **CLI** — Generate from the command line or AI agents → [CLI and AI agents](cli.md)
-- **Japanese and English UI** — Switch the language at the top right of the window
+- **Japanese and English UI** — Switch the language at the top right of the log
 
 ## Demo
 

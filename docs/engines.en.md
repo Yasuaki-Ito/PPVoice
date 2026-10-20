@@ -9,12 +9,12 @@ Choose the TTS engine with **Engine** on the **Voice** tab. The engine is shared
 
 ## VOICEVOX
 
-Start [VOICEVOX](https://voicevox.hiroshiba.jp/), click **Get speakers**, and choose a speaker and style. The default URL is `http://localhost:50021`.
+Start [VOICEVOX](https://voicevox.hiroshiba.jp/), click **Get speakers**, and choose a speaker and style for the role selected in the cast. The default URL is `http://localhost:50021`.
 
 !!! note "Terms of use for characters"
     Each VOICEVOX character has its own terms of use. Check them on the [VOICEVOX website](https://voicevox.hiroshiba.jp/) before use.
 
-[SelfVox](https://github.com/Yasuaki-Ito/selfvox), which has a VOICEVOX-compatible API, can also be used. SelfVox is a voice cloning tool based on Qwen3-TTS: register a sample of your voice, and it reads in that voice. Just change **VOICEVOX URL** to the address of SelfVox.
+[SelfVox](https://github.com/Yasuaki-Ito/selfvox), which has a VOICEVOX-compatible API, can also be used. SelfVox is a voice cloning tool based on Qwen3-TTS: register a sample of your voice, and it reads in that voice. Keep the engine set to VOICEVOX and just change the URL to the address of SelfVox.
 
 ## OpenAI-compatible engine
 
@@ -48,6 +48,7 @@ Kokoro-FastAPI voices (names like `af_heart`) are chosen in two steps: **Languag
 ### Differences from VOICEVOX
 
 - Speed and volume (sliders and `<speed>` `<volume>` tags) are supported
-- Pitch and intonation (`<pitch>` `<intonation>`) and the accent setting `{…|…|N}` are not supported. They are ignored with a message in the log
+- Pitch and intonation (`<pitch>` `<intonation>`), the accent setting `{…|…|N}`, and style switching (`<style>`) are not supported. They are ignored with a message in the log
+- Each role can have **Instructions** on how to speak. They work with OpenAI `gpt-4o-mini-tts` and others (Kokoro ignores them)
 - Pronunciation `{display|reading}` works as is (for example, `{LaTeX|lay-tech}`, `{PPTX|P P T X}`)
 - **Also split at . ! ?** is turned on by default when you choose the OpenAI-compatible engine

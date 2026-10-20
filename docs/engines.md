@@ -9,12 +9,12 @@
 
 ## VOICEVOX
 
-[VOICEVOX](https://voicevox.hiroshiba.jp/) を起動した状態で「話者取得」を押し、話者とスタイルを選びます。初期設定の URL は `http://localhost:50021` です。
+[VOICEVOX](https://voicevox.hiroshiba.jp/) を起動した状態で「話者取得」を押し、キャストで選んでいる役の話者とスタイルを選びます。初期設定の URL は `http://localhost:50021` です。
 
 !!! note "キャラクターの利用規約"
     VOICEVOX のキャラクターには、それぞれ利用規約があります。使用前に [VOICEVOX 公式サイト](https://voicevox.hiroshiba.jp/) で確認してください。
 
-VOICEVOX 互換の API を持つ [SelfVox](https://github.com/Yasuaki-Ito/selfvox) も使えます。SelfVox は Qwen3-TTS による音声クローン合成ツールで、自分の声のサンプルを登録すると、その声で読み上げられます。「VOICEVOX URL」を SelfVox のアドレスに変えるだけで切り替えられます。
+VOICEVOX 互換の API を持つ [SelfVox](https://github.com/Yasuaki-Ito/selfvox) も使えます。SelfVox は Qwen3-TTS による音声クローン合成ツールで、自分の声のサンプルを登録すると、その声で読み上げられます。エンジンを VOICEVOX にしたまま、URL を SelfVox のアドレスに変えるだけで切り替えられます。
 
 ## OpenAI 互換エンジン
 
@@ -48,6 +48,7 @@ Kokoro-FastAPI の声（`af_heart` のような名前）は、「言語・性別
 ### VOICEVOX との違い
 
 - 速度・音量（スライダーと `<speed>` `<volume>` タグ）は使えます
-- ピッチ・抑揚（`<pitch>` `<intonation>`）とアクセント指定 `{…|…|N}` は使えません。ノートに書かれていても無視し、ログに表示します
+- ピッチ・抑揚（`<pitch>` `<intonation>`）、アクセント指定 `{…|…|N}`、スタイルの切り替え `<style>` は使えません。ノートに書かれていても無視し、ログに表示します
+- 役ごとに **読み方の指示**（instructions）を書けます。OpenAI の `gpt-4o-mini-tts` などが対応しています（Kokoro は無視します）
 - 読み指定 `{表示|読み}` はそのまま使えます（例: `{LaTeX|lay-tech}`、`{PPTX|P P T X}`）
 - 「文末 (. ! ?) でも区切る」は、OpenAI互換を選ぶと初期状態でオンになります

@@ -22,9 +22,9 @@ PPVoice turns the **speaker notes** of a PowerPoint file into narration and gene
 
 ## Demo
 
-A video made with PPVoice, narrated in English with Kokoro. Click to play.
+A video made with PPVoice, narrated in English with Kokoro as a dialogue between two voices. Click to play.
 
-[![Demo video](https://img.youtube.com/vi/XmQyfks4mGA/sddefault.jpg)](https://youtu.be/XmQyfks4mGA)
+[![Demo video](https://img.youtube.com/vi/ZXCPtZej9ko/sddefault.jpg)](https://youtu.be/ZXCPtZej9ko)
 
 ![PPVoice](screenshot.en.png)
 

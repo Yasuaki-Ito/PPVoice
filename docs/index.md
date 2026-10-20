@@ -22,9 +22,9 @@ PowerPoint のノート欄から音声を自動で合成し、**音声付き PPT
 
 ## デモ
 
-PPVoice で作った紹介動画です（クリックで再生）。この動画自体も PPVoice で作成しています。
+PPVoice で作った紹介動画です（クリックで再生）。この動画自体も PPVoice で作成しています（四国めたんとずんだもんの掛け合い）。
 
-[![紹介動画](https://img.youtube.com/vi/9V2-6MLVjm8/sddefault.jpg)](https://youtu.be/9V2-6MLVjm8)
+[![紹介動画](https://img.youtube.com/vi/q0kRIZS1YKc/sddefault.jpg)](https://youtu.be/q0kRIZS1YKc)
 
 ![PPVoice の画面](screenshot.png)
 

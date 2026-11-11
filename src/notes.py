@@ -176,7 +176,14 @@ def _to_reading(text: str) -> str:
     """
     text = _READING_PATTERN.sub(r"\2", text)
     text = _BRACE_PATTERN.sub(r"\1", text)
-    return _FORMAT_TAG.sub("", text)
+    text = _SPLIT_BR.sub(_BR_MARK, text)
+    text = _FORMAT_TAG.sub("", text)
+    # <br> の両側が英数字・記号なら単語がつながらないよう空白にする (日本語は何も入れない)
+    return _BR_SPACE.sub(" ", text).replace(_BR_MARK, "")
+
+
+_BR_MARK = "\x17"
+_BR_SPACE = re.compile(f"(?<=[!-~]){_BR_MARK}+(?=[!-~])")
 
 
 # 文末 (. ! ?) で区切る位置: 閉じ引用符・括弧 (と直後の <next>) の後に空白があり、
@@ -223,7 +230,7 @@ def _split_sentences(
             (英語のように改行なしの段落で書かれたノート向け)
 
     Returns:
-        (sentences, pauses, leading_pause, next_positions, speakers)
+        (sentences, pauses, leading_pause, next_positions, speakers, trailing_pause)
         - sentences: 分割された文のリスト
         - pauses: 各文の後の無音秒数 (len = len(sentences) - 1)
           None はデフォルト pause_sec を使用、float は指定秒数
@@ -231,6 +238,7 @@ def _split_sentences(
         - next_positions: [(sentence_index, char_ratio), ...]
           sentence_index=-1 は先頭 <next> (ms=0)
         - speakers: 各文の役 (<speaker=...>。None は既定の役)。<speaker> だけの行も次の文に効く
+        - trailing_pause: 最後の文の後の無音秒数 (最後の文より後の <wait>。0.0 = なし)
     """
     # {...|...} と {...} をプレースホルダに置換して分割から保護
     placeholders: list[str] = []
@@ -345,7 +353,8 @@ def _split_sentences(
     if pending_next and sentences:
         next_positions.append((len(sentences) - 1, 1.0))
 
-    return [_restore(s) for s in sentences], pauses, leading_pause, next_positions, speakers
+    trailing_pause = pending_wait if sentences and pending_wait else 0.0
+    return [_restore(s) for s in sentences], pauses, leading_pause, next_positions, speakers, trailing_pause
 
 
 # ---------------------------------------------------------------------------
@@ -375,6 +384,7 @@ class ParsedNotes:
     leading_pause: float         # 最初の文の前の無音秒数
     next_positions: list[tuple[int, float]]  # <next> の位置 [(sentence_index, char_ratio), ...]
     dict_hits: dict[str, int] = field(default_factory=dict)  # 辞書の語 → 当たった回数
+    trailing_pause: float = 0.0  # 最後の文の後の無音秒数 (末尾の <wait>)
 
 
 def _last_tag_value(pattern: re.Pattern, text: str) -> float | None:
@@ -400,7 +410,8 @@ def parse_notes(text: str, split_sentence_ends: bool = False,
     # <config> / <cast> / <dict> タグを事前除去 (configだけの行が空文にならないよう)
     text = _CONFIG_TAG.sub("", text)
     text, dict_hits = apply_dictionary(text, dictionary or {})
-    raw_sentences, pauses, leading_pause, next_positions, speakers = _split_sentences(text, split_sentence_ends)
+    raw_sentences, pauses, leading_pause, next_positions, speakers, trailing_pause = _split_sentences(
+        text, split_sentence_ends)
     sentences = [
         Sentence(
             raw=s,
@@ -416,4 +427,4 @@ def parse_notes(text: str, split_sentence_ends: bool = False,
         )
         for s, speaker in zip(raw_sentences, speakers)
     ]
-    return ParsedNotes(sentences, pauses, leading_pause, next_positions, dict_hits)
+    return ParsedNotes(sentences, pauses, leading_pause, next_positions, dict_hits, trailing_pause)

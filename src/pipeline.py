@@ -307,7 +307,7 @@ def synthesize_notes(
 
     wav_chunks = engine.synthesize_sentences(sentences, params, on_done)
     wav, timings = _concat_wav(wav_chunks, pauses=pauses, sentences=[s.display for s in sentences],
-                               leading_pause=parsed.leading_pause)
+                               leading_pause=parsed.leading_pause, trailing_pause=parsed.trailing_pause)
     for timing, role in zip(timings, roles):
         timing.speaker = role.name
     if cache is not None:

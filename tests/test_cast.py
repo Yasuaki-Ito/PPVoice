@@ -226,3 +226,15 @@ def test_voicevox_accent_uses_style_of_the_sentence(monkeypatch):
     sentences = parse_notes("<style=ささやき>{端|はし|0}。\n<speaker=めたん>{端|はし|0}。").sentences
     engine.synthesize_sentences(sentences, voice_params(sentences, cast))
     assert calls == [("mora_pitch", 22), ("mora_pitch", 0)]
+
+
+def test_trailing_wait_adds_silence_at_the_end():
+    # 最後の文より後の <wait> は、音声の末尾の無音になる (以前は捨てていた)
+    cast = Cast(VoiceSpec(1, name="A"))
+    p = parse_notes("一。\n<wait=1s>\n<wait=500ms>")
+    assert (p.pauses, p.trailing_pause) == ([], 1.5)
+    wav, timings, _ = synthesize_notes(FakeEngine(), "一。\n二。<wait=1s>", cast, pause_sec=0.5)
+    with wave.open(io.BytesIO(wav)) as w:
+        assert w.getnframes() == 100 + 500 + 100 + 1000  # 1000 フレーム = 1 秒
+    assert [t.start_ms for t in timings] == [0, 600]
+    assert parse_notes("<wait=1s>").trailing_pause == 0.0  # 文がなければ音声もない

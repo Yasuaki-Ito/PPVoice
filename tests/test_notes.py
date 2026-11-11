@@ -156,7 +156,7 @@ def test_adjacent_readings_with_digits():
 
 def test_many_placeholders():
     text = "".join(f"{i}{{a{i}|b{i}}}" for i in range(15))
-    raw, _, _, _, _ = _split_sentences(text)
+    raw, _, _, _, _, _ = _split_sentences(text)
     assert raw == [text]
 
 
@@ -256,3 +256,13 @@ def test_patterns_used_by_next_check():
 def test_to_display_and_reading():
     assert _to_display("{漢字|かんじ}<wait=1s>") == "漢字"
     assert _to_reading("{漢字|かんじ}<b>x</b>") == "かんじx"
+
+
+def test_br_keeps_word_boundary_in_reading():
+    # 英語: <br> の両側の単語がつながらない。日本語: 何も入れない
+    assert _to_reading("write the script<br>in the notes,<br/>and <b>go</b><br><b>now</b>") == \
+        "write the script in the notes, and go now"
+    assert _to_reading("書くだけで、<br>解説動画が<br>できる") == "書くだけで、解説動画ができる"
+    assert _to_reading("script <br>in") == "script in"
+    s = parse_notes("Open it in PPVoice,<br>and click Generate.", True).sentences[0]
+    assert (s.display, s.reading) == ("Open it in PPVoice,\nand click Generate.", "Open it in PPVoice, and click Generate.")

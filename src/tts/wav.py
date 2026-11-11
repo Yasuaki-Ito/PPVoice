@@ -17,12 +17,14 @@ def _concat_wav(
     pauses: list[float],
     sentences: list[str] | None = None,
     leading_pause: float = 0.0,
+    trailing_pause: float = 0.0,
 ) -> tuple[bytes, list[Timing]]:
     """複数のWAVバイナリを1つに結合する。
 
     Args:
         pauses: 各チャンク間の無音秒数 (len = len(wav_chunks) - 1)
         leading_pause: 最初のチャンクの前に挿入する無音秒数
+        trailing_pause: 最後のチャンクの後に足す無音秒数
 
     Returns:
         (結合WAV, [Timing(文テキスト, 開始ms, 長さms), ...])
@@ -64,7 +66,10 @@ def _concat_wav(
                 all_frames += _make_silence(params, gap)
                 current_ms += int(gap * 1000)
 
-    if len(wav_chunks) == 1 and not pauses and leading_pause <= 0:
+    if params is not None and trailing_pause > 0:
+        all_frames += _make_silence(params, trailing_pause)
+
+    if len(wav_chunks) == 1 and not pauses and leading_pause <= 0 and trailing_pause <= 0:
         return wav_chunks[0], timings
 
     out = io.BytesIO()

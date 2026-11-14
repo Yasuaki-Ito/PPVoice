@@ -344,11 +344,15 @@ STRINGS: dict[str, tuple[str, str]] = {
     "log_video_howto": ("\n--- 動画 (MP4) にするには ---\n"
                         "1. 生成されたPPTXをPowerPointで開く\n"
                         "2. ファイル → エクスポート → ビデオの作成\n"
-                        "3. 品質を選択して「ビデオの作成」をクリック",
+                        "3. 「記録されたタイミングとナレーションを使用する」を選ぶ\n"
+                        "   (「使用しない」のままだと、音声の後の間やスライドの切り替えのタイミングが反映されません)\n"
+                        "4. 品質を選択して「ビデオの作成」をクリック",
                         "\n--- To create a video (MP4) ---\n"
                         "1. Open the generated PPTX in PowerPoint\n"
                         "2. File → Export → Create a Video\n"
-                        "3. Choose the quality and click \"Create Video\""),
+                        "3. Choose \"Use Recorded Timings and Narrations\"\n"
+                        "   (with \"Don't Use...\", the pauses after the narration and the slide timing are lost)\n"
+                        "4. Choose the quality and click \"Create Video\""),
 
     # --- ログ: 埋め込み・エンジン ---
     "log_saved": ("音声付きPPTX を保存しました: {path}", "Saved the narrated PPTX: {path}"),
